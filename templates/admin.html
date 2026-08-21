@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Übersicht – Gabis 50er</title>
+    <link href="https://fonts.googleapis.com/css2?family=Shrikhand&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="checkerboard-top"></div>
+    <div class="app-container admin-container">
+        <header class="header admin-header">
+            <div class="header-top">
+                <div class="diner-badge">👑 ADMIN PANEL</div>
+                <a href="{{ url_for('admin_logout') }}" class="btn-sm btn-outline">Abmelden</a>
+            </div>
+            <h1 class="title retro-title">Gabi's Jukebox Archiv</h1>
+            <p class="subtitle">Alle bisher hochgeladenen Party-Fotos auf einen Blick.</p>
+        </header>
+
+        <section class="admin-stats-grid">
+            <div class="stat-card">
+                <div class="stat-value">{{ stats.total_photos if stats.total_photos else 0 }}</div>
+                <div class="stat-label">Fotos gesamt</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{ stats.total_guests if stats.total_guests else 0 }}</div>
+                <div class="stat-label">Aktive Uploader</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">
+                    {% if stats.total_size %}
+                        {{ (stats.total_size / (1024 * 1024)) | round(1) }} MB
+                    {% else %}
+                        0 MB
+                    {% endif %}
+                </div>
+                <div class="stat-label">Gesamtspeicher</div>
+            </div>
+        </section>
+
+        <div class="admin-actions">
+            <a href="{{ url_for('admin_download_zip') }}" class="btn btn-gold btn-large">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Alle Fotos als ZIP herunterladen
+            </a>
+            <a href="{{ url_for('index') }}" class="btn btn-outline">Zurück zur Hauptseite</a>
+        </div>
+
+        <section class="admin-gallery">
+            <h2>Alle hochgeladenen Fotos ({{ photos|length }})</h2>
+            {% if photos %}
+                <div class="gallery-grid">
+                    {% for photo in photos %}
+                        <div class="gallery-card">
+                            <img src="{{ url_for('serve_thumbnail', filename=photo.thumbnail) }}" alt="{{ photo.original_filename }}" loading="lazy">
+                            <div class="gallery-card-info">
+                                <span class="photo-filename" title="{{ photo.original_filename }}">{{ photo.original_filename }}</span>
+                                <span class="photo-date">{{ photo.uploaded_at }}</span>
+                            </div>
+                            <a href="{{ url_for('serve_upload', filename=photo.filename) }}" target="_blank" class="gallery-card-link" title="Original anzeigen">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                            </a>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="empty-state">
+                    <p>Noch keine Fotos hochgeladen.</p>
+                </div>
+            {% endif %}
+        </section>
+    </div>
+</body>
+</html>

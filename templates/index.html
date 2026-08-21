@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Gabis 50er – Foto-Sammel-Box</title>
+    
+    <!-- Google Fonts: Shrikhand & Outfit -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Shrikhand&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Custom Stylesheet -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="checkerboard-top"></div>
+    <div class="app-container">
+        
+        <!-- PROMINENT HERO HEADER -->
+        <header class="header hero-header">
+            <div class="diner-badge">🍿 GABIS 50ER 🎷</div>
+            <h1 class="hero-headline">Foto-Sammel-Box</h1>
+            <p class="subtitle">Teile deine schönsten Party-Momente direkt vom Smartphone!</p>
+        </header>
+
+        <!-- MAIN CENTRAL UPLOADER (Focus for Smartphones) -->
+        <main class="content">
+            <div class="upload-card retro-hero-card">
+                <!-- Dropzone / Touch trigger -->
+                <div class="dropzone" id="dropzone">
+                    <div class="dropzone-icon hero-icon">
+                        📸
+                    </div>
+                    
+                    <div class="file-action-buttons">
+                        <label for="camera-input" class="btn btn-retro touch-btn btn-hero">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                            Kamera / Fotos wählen
+                        </label>
+                        <input type="file" id="camera-input" accept="image/*" multiple style="display: none;">
+                    </div>
+
+                    <p class="upload-hint">Tippe auf den Button oder ziehe Bilder hierhin</p>
+                    <p class="privacy-note">🔒 <strong>Blind Upload:</strong> Deine Fotos sind für andere Gäste unsichtbar.</p>
+                </div>
+
+                <!-- Realtime Upload Progress Bar & Cancel Button -->
+                <div class="upload-progress-container hidden" id="progress-container">
+                    <div class="progress-info">
+                        <span id="progress-status-text">Lade Fotos hoch...</span>
+                        <span id="progress-percent">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                        <div class="progress-bar-fill" id="progress-bar-fill"></div>
+                    </div>
+                    <button type="button" class="btn-cancel-upload" id="btn-cancel-upload">
+                        ❌ Upload abbrechen
+                    </button>
+                </div>
+
+                <!-- SUBTLE COUNTER: Own Upload Count directly below upload area -->
+                <div class="my-upload-count-subtle" id="my-upload-count-text">
+                    Du hast bisher 0 eigene Fotos hochgeladen
+                </div>
+            </div>
+
+            <!-- SUBTLE BOTTOM AREA: Live Counter & Discreet Toggle for My Photos -->
+            <section class="subtle-bottom-section">
+                <!-- Subtle Live Counter -->
+                <div class="subtle-stats-bar" id="stats-bar">
+                    <span class="pulse-dot"></span>
+                    <span id="total-photos-count">🍿 Lade Zähler...</span>
+                </div>
+
+                <!-- DISCREET TOGGLE BUTTON FOR MY PHOTOS (At very end of page, hidden by default) -->
+                <div class="discreet-toggle-wrapper">
+                    <button type="button" class="btn-subtle-toggle" id="toggle-my-photos-btn">
+                        👁️ Meine eigenen Fotos anzeigen (<span id="my-photos-badge">0</span>)
+                    </button>
+                </div>
+
+                <!-- Collapsible Gallery Section (HIDDEN BY DEFAULT) -->
+                <div id="my-photos-container" class="my-photos-collapsible hidden">
+                    <div class="gallery-grid" id="my-photos-grid">
+                        <!-- Populated via JS -->
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>🕺 Gabis 50er Feier • Rock & Roll Forever 🎶</p>
+        </footer>
+    </div>
+
+    <!-- Lightbox Modal for Photo Preview -->
+    <div class="modal hidden" id="lightbox-modal">
+        <button class="modal-close" id="modal-close-btn">&times;</button>
+        <div class="modal-body">
+            <img src="" id="lightbox-img" alt="Vorschau Foto">
+        </div>
+    </div>
+
+    <!-- Toast Notification Container (Popup for Success Message) -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- App JavaScript -->
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
