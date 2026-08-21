@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install system dependencies (needed for Pillow / libjpeg if needed)
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libjpeg-dev \
@@ -21,12 +21,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY . .
 
-# Create data directory and non-root user for security
-RUN mkdir -p /app/data && \
-    useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app
-
-USER appuser
+# Create initial data directories
+RUN mkdir -p /app/data /app/data/uploads /app/data/thumbnails
 
 EXPOSE 5000
 
