@@ -224,6 +224,11 @@ def delete_photo(photo_id):
 
 @app.route('/uploads/<filename>')
 def serve_upload(filename):
+    if request.args.get('download', '0') == '1':
+        with get_db() as conn:
+            photo = conn.execute('SELECT original_filename FROM photos WHERE filename = ?', (filename,)).fetchone()
+            download_name = photo['original_filename'] if photo else filename
+        return send_from_directory(UPLOADS_DIR, filename, as_attachment=True, download_name=download_name)
     return send_from_directory(UPLOADS_DIR, filename)
 
 @app.route('/thumbnails/<filename>')
