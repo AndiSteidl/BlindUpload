@@ -5,12 +5,14 @@ services:
     build: .
     container_name: gabi_blind_upload
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
-      - "${PORT:-8080}:5000"
+      - "${PORT:-8050}:5000"
     environment:
       - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-for-gabi-50}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-Gabi50!}
-      - MAX_CONTENT_LENGTH=52428800
+      - MAX_CONTENT_LENGTH=${MAX_CONTENT_LENGTH:-52428800}
       - DATA_DIR=/app/data
     volumes:
       - ./uploads_data:/app/data
