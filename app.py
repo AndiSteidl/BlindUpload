@@ -224,11 +224,6 @@ def delete_photo(photo_id):
 
 @app.route('/uploads/<filename>')
 def serve_upload(filename):
-    if request.args.get('download', '0') == '1':
-        with get_db() as conn:
-            photo = conn.execute('SELECT original_filename FROM photos WHERE filename = ?', (filename,)).fetchone()
-            download_name = photo['original_filename'] if photo else filename
-        return send_from_directory(UPLOADS_DIR, filename, as_attachment=True, download_name=download_name)
     return send_from_directory(UPLOADS_DIR, filename)
 
 @app.route('/thumbnails/<filename>')
@@ -302,45 +297,6 @@ def admin_download_zip():
         mimetype='application/zip',
         as_attachment=True,
         download_name=f'Gabi_50_Geburtstag_Fotos_{now_str}.zip'
-    )
-
-@app.route('/admin/download-selected-zip', methods=['POST'])
-def admin_download_selected_zip():
-    if not session.get('admin_authed', False):
-        return jsonify({'error': 'Nicht autorisiert.'}), 403
-        
-    data = request.get_json(silent=True) or request.form
-    photo_ids = data.getlist('photo_ids') if hasattr(data, 'getlist') else data.get('photo_ids', [])
-    if isinstance(photo_ids, str):
-        photo_ids = [photo_ids]
-    
-    if not photo_ids:
-        return jsonify({'error': 'Keine Fotos ausgewählt.'}), 400
-
-    memory_file = io.BytesIO()
-    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-        with get_db() as conn:
-            placeholders = ','.join('?' for _ in photo_ids)
-            query = f'SELECT filename, original_filename FROM photos WHERE id IN ({placeholders})'
-            photos = conn.execute(query, photo_ids).fetchall()
-            
-            for idx, photo in enumerate(photos, 1):
-                file_path = os.path.join(UPLOADS_DIR, photo['filename'])
-                if os.path.exists(file_path):
-                    ext = os.path.splitext(photo['filename'])[1]
-                    original_name = photo['original_filename']
-                    if not original_name.lower().endswith(ext.lower()):
-                        original_name = f"{original_name}{ext}"
-                    zip_entry_name = f"Foto_{idx:03d}_{original_name}"
-                    zf.write(file_path, arcname=zip_entry_name)
-                    
-    memory_file.seek(0)
-    now_str = datetime.now().strftime('%Y%m%d_%H%M')
-    return send_file(
-        memory_file,
-        mimetype='application/zip',
-        as_attachment=True,
-        download_name=f'Gabi_50_Auswahl_{now_str}.zip'
     )
 
 if __name__ == '__main__':
