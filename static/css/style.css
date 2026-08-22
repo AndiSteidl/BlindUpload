@@ -635,3 +635,303 @@ body {
     .gallery-grid { grid-template-columns: repeat(3, 1fr); }
     .admin-stats-grid { grid-template-columns: 1fr; }
 }
+
+/* ----------------------------------------------------
+   Admin Gallery Selection & Lightbox Styling
+   ---------------------------------------------------- */
+
+.gallery-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.gallery-header h2 {
+    margin-bottom: 0;
+    font-size: 1.25rem;
+}
+
+.selection-controls {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.admin-photo-card {
+    position: relative;
+    user-select: none;
+    display: flex;
+    flex-direction: column;
+}
+
+.admin-photo-card.selected {
+    border-color: var(--retro-yellow);
+    box-shadow: 0 0 16px rgba(255, 183, 3, 0.45);
+}
+
+.card-select-container {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 10;
+    cursor: pointer;
+}
+
+.card-select-checkbox {
+    position: absolute;
+    opacity: 0;
+    cursor: pointer;
+    height: 0;
+    width: 0;
+}
+
+.card-select-container .checkmark {
+    display: block;
+    width: 26px;
+    height: 26px;
+    background: rgba(15, 18, 28, 0.85);
+    border: 2px solid rgba(255, 255, 255, 0.7);
+    border-radius: 6px;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+}
+
+.card-select-container:hover .checkmark {
+    border-color: var(--retro-yellow);
+    background: rgba(15, 18, 28, 0.95);
+}
+
+.card-select-checkbox:checked ~ .checkmark {
+    background: var(--retro-yellow);
+    border-color: var(--retro-yellow);
+}
+
+.card-select-checkbox:checked ~ .checkmark:after {
+    content: "";
+    display: block;
+    width: 6px;
+    height: 12px;
+    border: solid #12141D;
+    border-width: 0 2.5px 2.5px 0;
+    margin: 3px 0 0 8px;
+    transform: rotate(45deg);
+}
+
+.card-img-wrapper {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+.card-img-wrapper .hover-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.admin-photo-card:hover .hover-overlay {
+    opacity: 1;
+}
+
+.gallery-card-actions {
+    position: absolute;
+    bottom: 6px;
+    right: 6px;
+    z-index: 10;
+    display: flex;
+    gap: 4px;
+}
+
+.gallery-card-action {
+    width: 32px;
+    height: 32px;
+    background: rgba(15, 18, 28, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.gallery-card-action:hover {
+    background: var(--retro-red);
+    color: white;
+    border-color: white;
+    transform: scale(1.1);
+}
+
+/* Floating Sticky Selection Bar (iPhone & Mobile Optimized) */
+.selection-bar {
+    position: fixed;
+    bottom: 1.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1500;
+    width: calc(100% - 2rem);
+    max-width: 650px;
+    background: rgba(22, 26, 38, 0.96);
+    border: 2px solid var(--retro-yellow);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(16px);
+    padding: 0.85rem 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    animation: slideUpFloat 0.3s ease-out;
+}
+
+@keyframes slideUpFloat {
+    from { transform: translate(-50%, 40px); opacity: 0; }
+    to { transform: translate(-50%, 0); opacity: 1; }
+}
+
+.selection-info {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.selection-badge {
+    background: var(--retro-yellow);
+    color: #12141D;
+    font-weight: 800;
+    font-size: 0.95rem;
+    padding: 0.2rem 0.65rem;
+    border-radius: 12px;
+}
+
+.selection-text {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #FFF8E7;
+    white-space: nowrap;
+}
+
+.selection-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+@media (max-width: 600px) {
+    .selection-bar {
+        flex-direction: column;
+        align-items: stretch;
+        bottom: 1rem;
+        padding: 0.75rem 1rem;
+    }
+    .selection-actions {
+        justify-content: space-between;
+    }
+    .selection-actions .btn {
+        flex: 1;
+        text-align: center;
+        padding: 0.6rem 0.5rem;
+        font-size: 0.78rem;
+    }
+}
+
+/* Admin Lightbox Styling */
+.admin-lightbox {
+    padding: 0;
+}
+
+.admin-lightbox-body {
+    max-width: 90vw;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+}
+
+.admin-lightbox-body img {
+    max-width: 85vw;
+    max-height: 72vh;
+    object-fit: contain;
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.lightbox-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(15, 18, 28, 0.75);
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    color: white;
+    font-size: 1.8rem;
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    cursor: pointer;
+    z-index: 2010;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+}
+
+.lightbox-nav:hover {
+    background: var(--retro-yellow);
+    color: #12141D;
+    border-color: var(--retro-yellow);
+}
+
+.lightbox-prev { left: 1.5rem; }
+.lightbox-next { right: 1.5rem; }
+
+@media (max-width: 600px) {
+    .lightbox-prev { left: 0.5rem; width: 40px; height: 40px; font-size: 1.4rem; }
+    .lightbox-next { right: 0.5rem; width: 40px; height: 40px; font-size: 1.4rem; }
+}
+
+.lightbox-footer {
+    width: 100%;
+    margin-top: 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    background: rgba(15, 18, 28, 0.85);
+    padding: 0.85rem 1.25rem;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.lightbox-filename {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--retro-yellow);
+    margin-bottom: 0.2rem;
+    word-break: break-all;
+}
+
+.lightbox-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.lightbox-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
