@@ -32,21 +32,34 @@ Erstelle eine `.env` Datei:
 cp .env.example .env
 nano .env
 ```
-Inhalte der `.env`:
-```env
-PORT=8050
-SECRET_KEY=dein-geheimer-schluessel-gabi50
-ADMIN_PASSWORD=Gabi50!
-MAX_CONTENT_LENGTH=1073741824
 
-# pCloud Cloud-Speicher Anbindung via WebDAV
+#### Bei aktivem 2FA/MFA im Hauptkonto (EMPFOHLEN: OAuth2 Access Token):
+Da WebDAV keine 2FA-Abfragen unterstützt, nutzt die App die offizielle pCloud REST-API mit einem permanenten Access Token:
+1. Öffne die pCloud Entwicklerseite: [https://docs.pcloud.com/my_apps/](https://docs.pcloud.com/my_apps/) (oder für EU: [https://e-my.pcloud.com/](https://e-my.pcloud.com/)).
+2. Klicke auf **"Register an App"** (z. B. Name: `BlindUpload`, Redirect URI: `https://my.pcloud.com/`).
+3. Notiere dir die angezeigte **Client ID**.
+4. Rufe im Browser folgenden Link auf (ersetze `DEINE_CLIENT_ID`):
+   - **EU-Konto:** `https://e-my.pcloud.com/oauth2/authorize?client_id=DEINE_CLIENT_ID&response_type=token`
+   - **US-Konto:** `https://my.pcloud.com/oauth2/authorize?client_id=DEINE_CLIENT_ID&response_type=token`
+5. Bestätige die Autorisierung (mit deinem 2FA-Code). Der Browser leitet dich weiter zu einer URL wie:
+   `https://my.pcloud.com/#access_token=DEIN_TOKEN_HIER&locationid=2`
+6. Kopiere den `access_token` in deine `.env`:
+   ```env
+   PCLOUD_ENABLED=true
+   PCLOUD_ACCESS_TOKEN=DEIN_TOKEN_HIER
+   PCLOUD_REGION=EU
+   PCLOUD_FOLDER=/Projekte/Gabis50
+   ```
+
+#### Alternative (WebDAV ohne 2FA):
+Falls du lieber klassisches WebDAV nutzen möchtest, erstelle ein zweites kostenloses pCloud-Konto ohne 2FA und gib den Ordner von deinem Hauptkonto für diese E-Mail frei:
+```env
 PCLOUD_ENABLED=true
-PCLOUD_USERNAME=deine-email@beispiel.de
-PCLOUD_PASSWORD=dein-pcloud-passwort
+PCLOUD_USERNAME=dein-zweitkonto@beispiel.de
+PCLOUD_PASSWORD=dein-zweitkonto-passwort
 PCLOUD_REGION=EU
-PCLOUD_FOLDER=/Gabis50
+PCLOUD_FOLDER=/Projekte/Gabis50
 ```
-*(Hinweis: Falls bei pCloud Zwei-Faktor-Authentifizierung (2FA) aktiviert ist, erstelle unter pCloud ➔ Einstellungen ➔ Sicherheit ➔ Drittanbieter-Passwörter ein App-Passwort.)*
 
 ### 3. Container starten
 ```bash
@@ -54,7 +67,7 @@ docker compose up -d --build
 ```
 Die Anwendung läuft nun unter `http://<deine-server-ip>:8050`.
 
-- Sämtliche Original-Fotos und Videos landen sicher in deinem pCloud-Ordner `/Gabis50/uploads/`.
+- Sämtliche Original-Fotos und Videos landen sicher in deinem pCloud-Ordner `/Projekte/Gabis50/uploads/`.
 - Bestehende Daten werden beim Start automatisch im Hintergrund hochgeladen und vom Server gelöscht.
 - Der Server speichert nur noch kleine Thumbnails (~20 KB) in `./uploads_data/thumbnails`.
 

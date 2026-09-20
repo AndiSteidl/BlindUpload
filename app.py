@@ -32,8 +32,9 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'gabi-50th-birthday-secr
 app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 1024 * 1024 * 1024))  # 1GB per file
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'Gabi50!')
 
-# pCloud Cloud-Speicher Konfiguration via WebDAV
+# pCloud Cloud-Speicher Konfiguration (OAuth2 API oder WebDAV)
 PCLOUD_ENABLED = os.environ.get('PCLOUD_ENABLED', 'false').lower() in ('true', '1', 'yes')
+PCLOUD_ACCESS_TOKEN = os.environ.get('PCLOUD_ACCESS_TOKEN', '').strip()
 PCLOUD_USERNAME = os.environ.get('PCLOUD_USERNAME', '').strip()
 PCLOUD_PASSWORD = os.environ.get('PCLOUD_PASSWORD', '').strip()
 PCLOUD_REGION = os.environ.get('PCLOUD_REGION', 'EU').strip().upper()
@@ -92,10 +93,18 @@ def init_db():
 init_db()
 
 # ----------------------------------------------------
-# pCloud WebDAV Integration Helpers
+# pCloud Cloud-Speicher Helpers (OAuth2 API & WebDAV)
 # ----------------------------------------------------
 def is_pcloud_configured():
-    return PCLOUD_ENABLED and bool(PCLOUD_USERNAME) and bool(PCLOUD_PASSWORD)
+    if not PCLOUD_ENABLED:
+        return False
+    return bool(PCLOUD_ACCESS_TOKEN) or (bool(PCLOUD_USERNAME) and bool(PCLOUD_PASSWORD))
+
+def is_pcloud_token_mode():
+    return bool(PCLOUD_ACCESS_TOKEN)
+
+def pcloud_api_base_url():
+    return 'https://eapi.pcloud.com' if PCLOUD_REGION == 'EU' else 'https://api.pcloud.com'
 
 def pcloud_base_url():
     return 'https://ewebdav.pcloud.com' if PCLOUD_REGION == 'EU' else 'https://webdav.pcloud.com'
@@ -112,63 +121,127 @@ def pcloud_remote_url(filename=''):
     return f"{base}{folder}/uploads"
 
 def pcloud_ensure_dirs():
-    """Ensure remote folders exist on pCloud via WebDAV MKCOL."""
+    """Ensure remote folders exist on pCloud via REST API or WebDAV MKCOL."""
     if not is_pcloud_configured():
         return False
     try:
-        auth = pcloud_get_auth()
-        base = pcloud_base_url()
-        parts = [p for p in f"{PCLOUD_FOLDER}/uploads".split('/') if p]
-        curr = ""
-        for part in parts:
-            curr += f"/{part}"
-            url = f"{base}{urllib.parse.quote(curr)}"
-            requests.request('MKCOL', url, auth=auth, timeout=15)
-        return True
+        if is_pcloud_token_mode():
+            api_base = pcloud_api_base_url()
+            url = f"{api_base}/createfolderifnotexists"
+            headers = {'Authorization': f'Bearer {PCLOUD_ACCESS_TOKEN}'}
+            params = {'path': f"{PCLOUD_FOLDER}/uploads"}
+            res = requests.get(url, headers=headers, params=params, timeout=15)
+            data = res.json()
+            return data.get('result') == 0
+        else:
+            auth = pcloud_get_auth()
+            base = pcloud_base_url()
+            parts = [p for p in f"{PCLOUD_FOLDER}/uploads".split('/') if p]
+            curr = ""
+            for part in parts:
+                curr += f"/{part}"
+                url = f"{base}{urllib.parse.quote(curr)}"
+                requests.request('MKCOL', url, auth=auth, timeout=15)
+            return True
     except Exception as err:
         app.logger.warning(f"pCloud ensure_dirs warning: {err}")
         return False
 
 def pcloud_upload_file(local_path, filename):
-    """Upload file from local filesystem directly to pCloud via WebDAV PUT."""
+    """Upload file from local filesystem directly to pCloud via REST API or WebDAV PUT."""
     if not is_pcloud_configured():
         return False
     try:
         pcloud_ensure_dirs()
-        url = pcloud_remote_url(filename)
-        with open(local_path, 'rb') as f:
-            res = requests.put(url, data=f, auth=pcloud_get_auth(), timeout=(15, 600))
-        if res.status_code in (200, 201, 204):
-            return True
-        app.logger.error(f"pCloud PUT {filename} failed: {res.status_code} {res.text}")
-        return False
+        if is_pcloud_token_mode():
+            api_base = pcloud_api_base_url()
+            url = f"{api_base}/uploadfile"
+            headers = {'Authorization': f'Bearer {PCLOUD_ACCESS_TOKEN}'}
+            params = {
+                'path': f"{PCLOUD_FOLDER}/uploads",
+                'filename': filename,
+                'nopartial': 1
+            }
+            with open(local_path, 'rb') as f:
+                res = requests.post(url, headers=headers, params=params, files={'file': f}, timeout=(15, 600))
+            if res.status_code == 200:
+                data = res.json()
+                if data.get('result') == 0:
+                    return True
+                app.logger.error(f"pCloud API upload failed for {filename}: {data}")
+                return False
+            app.logger.error(f"pCloud upload HTTP error {res.status_code}: {res.text}")
+            return False
+        else:
+            url = pcloud_remote_url(filename)
+            with open(local_path, 'rb') as f:
+                res = requests.put(url, data=f, auth=pcloud_get_auth(), timeout=(15, 600))
+            if res.status_code in (200, 201, 204):
+                return True
+            app.logger.error(f"pCloud PUT {filename} failed: {res.status_code} {res.text}")
+            return False
     except Exception as err:
         app.logger.error(f"pCloud upload error for {filename}: {err}")
         return False
 
 def pcloud_delete_file(filename):
-    """Delete file from pCloud via WebDAV DELETE."""
+    """Delete file from pCloud via REST API or WebDAV DELETE."""
     if not is_pcloud_configured():
         return False
     try:
-        url = pcloud_remote_url(filename)
-        res = requests.delete(url, auth=pcloud_get_auth(), timeout=30)
-        return res.status_code in (200, 204, 404)
+        if is_pcloud_token_mode():
+            api_base = pcloud_api_base_url()
+            url = f"{api_base}/deletefile"
+            headers = {'Authorization': f'Bearer {PCLOUD_ACCESS_TOKEN}'}
+            params = {'path': f"{PCLOUD_FOLDER}/uploads/{filename}"}
+            res = requests.get(url, headers=headers, params=params, timeout=30)
+            data = res.json()
+            return data.get('result') in (0, 2009)
+        else:
+            url = pcloud_remote_url(filename)
+            res = requests.delete(url, auth=pcloud_get_auth(), timeout=30)
+            return res.status_code in (200, 204, 404)
     except Exception as err:
         app.logger.error(f"pCloud delete error for {filename}: {err}")
         return False
+
+def pcloud_get_download_stream_info(filename):
+    """Returns (stream_url, auth) for downloading or streaming given file on pCloud."""
+    if is_pcloud_token_mode():
+        api_base = pcloud_api_base_url()
+        url = f"{api_base}/getfilelink"
+        headers = {'Authorization': f'Bearer {PCLOUD_ACCESS_TOKEN}'}
+        params = {'path': f"{PCLOUD_FOLDER}/uploads/{filename}"}
+        res = requests.get(url, headers=headers, params=params, timeout=15)
+        data = res.json()
+        if data.get('result') == 0 and data.get('hosts'):
+            host = data['hosts'][0]
+            path = data['path']
+            return f"https://{host}{path}", None
+        return None, None
+    else:
+        return pcloud_remote_url(filename), pcloud_get_auth()
 
 def pcloud_stream_file(filename, download_name=None):
     """Stream file from pCloud directly to HTTP client with Range-header support for video playback."""
     if not is_pcloud_configured():
         return None
     try:
-        url = pcloud_remote_url(filename)
+        stream_url, auth = pcloud_get_download_stream_info(filename)
+        if not stream_url:
+            return None
+
         headers = {}
         if 'Range' in request.headers:
             headers['Range'] = request.headers['Range']
 
-        res = requests.get(url, auth=pcloud_get_auth(), headers=headers, stream=True, timeout=(15, 120))
+        res = requests.get(
+            stream_url,
+            auth=auth if isinstance(auth, HTTPBasicAuth) else None,
+            headers=headers,
+            stream=True,
+            timeout=(15, 120)
+        )
         if res.status_code not in (200, 206):
             return None
 
@@ -700,11 +773,12 @@ def admin_download_zip():
                 elif photo['storage_provider'] == 'pcloud' or is_pcloud_configured():
                     # Stream from pCloud directly into ZIP entry without touching local disk
                     try:
-                        url = pcloud_remote_url(photo['filename'])
-                        with requests.get(url, auth=pcloud_get_auth(), stream=True, timeout=(15, 180)) as r:
-                            if r.status_code == 200:
-                                with zf.open(zip_entry_name, 'w') as zf_entry:
-                                    shutil.copyfileobj(r.raw, zf_entry)
+                        stream_url, auth = pcloud_get_download_stream_info(photo['filename'])
+                        if stream_url:
+                            with requests.get(stream_url, auth=auth if isinstance(auth, HTTPBasicAuth) else None, stream=True, timeout=(15, 180)) as r:
+                                if r.status_code == 200:
+                                    with zf.open(zip_entry_name, 'w') as zf_entry:
+                                        shutil.copyfileobj(r.raw, zf_entry)
                     except Exception as err:
                         app.logger.error(f"Error streaming pCloud file {photo['filename']} into zip: {err}")
                     
