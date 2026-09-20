@@ -4,6 +4,7 @@ import sqlite3
 import io
 import zipfile
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from flask import (
     Flask, render_template, request, jsonify, session, 
     send_from_directory, redirect, url_for, make_response, send_file
@@ -21,8 +22,12 @@ app = Flask(__name__)
 
 # Config & Environment Variables
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'gabi-50th-birthday-secret-key-2026')
-app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 100 * 1024 * 1024))  # 100MB per request batch
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 100 * 1024 * 1024))  # 100MB per file
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'Gabi50!')
+
+# Thread pool for asynchronous background thumbnail generation
+# max_workers=2 keeps CPU & RAM usage low and responsive for multiple concurrent users
+executor = ThreadPoolExecutor(max_workers=2)
 
 # Data directories
 DATA_DIR = os.environ.get('DATA_DIR', os.path.join(os.path.abspath(os.path.dirname(__file__)), 'data'))
@@ -33,14 +38,17 @@ DB_PATH = os.path.join(DATA_DIR, 'photos.db')
 for folder in [DATA_DIR, UPLOADS_DIR, THUMBNAILS_DIR]:
     os.makedirs(folder, exist_ok=True)
 
-# Database helper
+# Database helper with WAL mode and busy timeout
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000;")
     return conn
 
 def init_db():
     with get_db() as conn:
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
         conn.execute('''
             CREATE TABLE IF NOT EXISTS photos (
                 id TEXT PRIMARY KEY,
@@ -57,6 +65,30 @@ def init_db():
         conn.commit()
 
 init_db()
+
+def generate_thumbnail_task(original_path, thumb_path, photo_id=None):
+    """Background task to generate optimized JPEG thumbnail without blocking HTTP request workers."""
+    try:
+        with Image.open(original_path) as img:
+            try:
+                img = ImageOps.exif_transpose(img)
+            except Exception:
+                pass
+            
+            width, height = img.size
+            thumb_img = img.copy()
+            if thumb_img.mode in ('RGBA', 'P', 'LA'):
+                thumb_img = thumb_img.convert('RGB')
+                
+            thumb_img.thumbnail((500, 500), Image.Resampling.LANCZOS)
+            thumb_img.save(thumb_path, 'JPEG', quality=82, optimize=True)
+
+        if photo_id:
+            with get_db() as conn:
+                conn.execute('UPDATE photos SET width = ?, height = ? WHERE id = ?', (width, height, photo_id))
+                conn.commit()
+    except Exception as err:
+        app.logger.error(f"Thumbnail generation error for {original_path}: {err}")
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif', 'dng'}
 
@@ -128,39 +160,16 @@ def upload_file():
                 file.save(out_path)
                 file_size = os.path.getsize(out_path)
                 
-                width, height = 0, 0
-                
-                # 2. Create web thumbnail (JPEG) for gallery display
-                try:
-                    with Image.open(out_path) as img:
-                        # Auto rotate based on EXIF tag (mobile camera orientation)
-                        try:
-                            img = ImageOps.exif_transpose(img)
-                        except Exception:
-                            pass
-                        
-                        width, height = img.size
-                        
-                        # Generate thumbnail (500x500 max)
-                        thumb_img = img.copy()
-                        if thumb_img.mode in ('RGBA', 'P', 'LA'):
-                            thumb_img = thumb_img.convert('RGB')
-                            
-                        thumb_img.thumbnail((500, 500), Image.Resampling.LANCZOS)
-                        thumb_img.save(thumb_path, 'JPEG', quality=82, optimize=True)
-                except Exception as thumb_err:
-                    # Fallback if thumbnail creation fails: copy or mark thumb
-                    print(f"Thumbnail creation fallback for {original_filename}: {thumb_err}")
-                    # If thumbnail generation fails, we still keep the original upload intact!
-                    thumb_filename = out_filename
-
-                # Insert metadata into SQLite
+                # 2. Insert metadata into SQLite immediately
                 with get_db() as conn:
                     conn.execute('''
                         INSERT INTO photos (id, filename, original_filename, thumbnail, session_id, file_size, width, height)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (photo_id, out_filename, original_filename, thumb_filename, user_id, file_size, width, height))
+                    ''', (photo_id, out_filename, original_filename, thumb_filename, user_id, file_size, 0, 0))
                     conn.commit()
+
+                # 3. Offload CPU-heavy thumbnail creation to background executor
+                executor.submit(generate_thumbnail_task, out_path, thumb_path, photo_id)
                     
                 uploaded_items.append({
                     'id': photo_id,
@@ -233,6 +242,24 @@ def serve_upload(filename):
 
 @app.route('/thumbnails/<filename>')
 def serve_thumbnail(filename):
+    thumb_path = os.path.join(THUMBNAILS_DIR, filename)
+    if os.path.exists(thumb_path):
+        return send_from_directory(THUMBNAILS_DIR, filename)
+        
+    # If thumbnail is still being generated in background thread, fallback to original
+    with get_db() as conn:
+        photo = conn.execute('SELECT filename FROM photos WHERE thumbnail = ?', (filename,)).fetchone()
+        if photo:
+            orig_path = os.path.join(UPLOADS_DIR, photo['filename'])
+            if os.path.exists(orig_path):
+                try:
+                    generate_thumbnail_task(orig_path, thumb_path, None)
+                    if os.path.exists(thumb_path):
+                        return send_from_directory(THUMBNAILS_DIR, filename)
+                except Exception:
+                    pass
+                return send_from_directory(UPLOADS_DIR, photo['filename'])
+
     return send_from_directory(THUMBNAILS_DIR, filename)
 
 # Admin Interface & Zip Download

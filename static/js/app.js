@@ -47,18 +47,22 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ----------------------------------------------------
+    // ----------------------------------------------------
     // Cancel Upload Handler
     // ----------------------------------------------------
+    let uploadCancelled = false;
+
     if (btnCancelUpload) {
         btnCancelUpload.addEventListener('click', () => {
+            uploadCancelled = true;
             if (currentXhr) {
                 currentXhr.abort();
                 currentXhr = null;
-                isUploading = false;
-                progressContainer.classList.add('hidden');
-                cameraInput.value = '';
-                showToast('❌ Upload wurde abgebrochen.', 'info', 3000);
             }
+            isUploading = false;
+            progressContainer.classList.add('hidden');
+            cameraInput.value = '';
+            showToast('❌ Upload wurde abgebrochen.', 'info', 3000);
         });
     }
 
@@ -98,88 +102,157 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ----------------------------------------------------
-    // AJAX Upload with Realtime Progress & Cancel (Abort) Support
+    // Sequential Queue Upload with Realtime Progress & Cancel Support
     // ----------------------------------------------------
-    function handleFilesUpload(fileList) {
+    async function handleFilesUpload(fileList) {
         if (isUploading) return;
 
         const files = Array.from(fileList);
         if (files.length === 0) return;
 
-        // Prepare FormData
-        const formData = new FormData();
-        files.forEach(file => {
-            formData.append('photos', file);
-        });
+        isUploading = true;
+        uploadCancelled = false;
+
+        const totalCount = files.length;
+        let successCount = 0;
+        const errors = [];
 
         // Show progress UI
-        isUploading = true;
         progressContainer.classList.remove('hidden');
         progressBarFill.style.width = '0%';
         progressPercent.textContent = '0%';
-        progressStatusText.textContent = `Lade ${files.length} Foto(s) hoch...`;
+        progressStatusText.textContent = totalCount === 1 
+            ? 'Lade 1 Foto hoch...' 
+            : `Bereite Upload von ${totalCount} Fotos vor...`;
 
-        currentXhr = new XMLHttpRequest();
-        currentXhr.open('POST', '/api/upload', true);
-
-        // Upload progress event
-        currentXhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-                const percent = Math.round((e.loaded / e.total) * 100);
-                progressBarFill.style.width = `${percent}%`;
-                progressPercent.textContent = `${percent}%`;
-                if (percent === 100) {
-                    progressStatusText.textContent = 'Verarbeite & sichere Bilder...';
+        function uploadSingleFile(file, fileIndex) {
+            return new Promise((resolve) => {
+                if (uploadCancelled) {
+                    return resolve({ success: false, cancelled: true });
                 }
-            }
-        };
 
-        currentXhr.onload = function () {
-            isUploading = false;
-            progressContainer.classList.add('hidden');
-            cameraInput.value = ''; // Reset input
-            const xhrRef = currentXhr;
-            currentXhr = null;
+                const formData = new FormData();
+                formData.append('photos', file);
 
-            if (xhrRef && xhrRef.status === 200) {
-                try {
-                    const res = JSON.parse(xhrRef.responseText);
-                    if (res.success) {
-                        const count = res.uploaded.length;
-                        showToast(`🎉 Super! ${count} Foto(s) erfolgreich hochgeladen!`, 'success', 4500);
-                        fetchStats();
-                        loadMyPhotos();
+                currentXhr = new XMLHttpRequest();
+                currentXhr.open('POST', '/api/upload', true);
+
+                // Upload progress event
+                currentXhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable && !uploadCancelled) {
+                        const fileRatio = e.loaded / e.total;
+                        const overallPercent = Math.min(99, Math.round(((fileIndex + fileRatio) / totalCount) * 100));
+                        progressBarFill.style.width = `${overallPercent}%`;
+                        progressPercent.textContent = `${overallPercent}%`;
+                        
+                        if (totalCount === 1) {
+                            progressStatusText.textContent = fileRatio >= 1 
+                                ? 'Verarbeite Bild...' 
+                                : `Lade Foto hoch (${Math.round(fileRatio * 100)}%)...`;
+                        } else {
+                            progressStatusText.textContent = fileRatio >= 1 
+                                ? `Sichere Foto ${fileIndex + 1} von ${totalCount}...` 
+                                : `Lade Foto ${fileIndex + 1} von ${totalCount} hoch (${Math.round(fileRatio * 100)}%)...`;
+                        }
                     }
-                } catch (err) {
-                    showToast('Fehler beim Verarbeiten der Server-Antwort.', 'error');
+                };
+
+                currentXhr.onload = function () {
+                    const xhrRef = currentXhr;
+                    currentXhr = null;
+
+                    if (uploadCancelled) {
+                        return resolve({ success: false, cancelled: true });
+                    }
+
+                    if (xhrRef && xhrRef.status === 200) {
+                        try {
+                            const res = JSON.parse(xhrRef.responseText);
+                            if (res.success && res.uploaded && res.uploaded.length > 0) {
+                                return resolve({ success: true, count: res.uploaded.length });
+                            } else {
+                                return resolve({ success: false, error: res.error || 'Unbekannter Fehler' });
+                            }
+                        } catch (err) {
+                            return resolve({ success: false, error: 'Ungültige Serverantwort' });
+                        }
+                    } else if (xhrRef && xhrRef.status === 413) {
+                        return resolve({ success: false, error: `${file.name}: Datei überschreitet das Limit (max. 100 MB).` });
+                    } else {
+                        let errMsg = `Fehler (${xhrRef ? xhrRef.status : 'unbekannt'})`;
+                        try {
+                            const res = JSON.parse(xhrRef.responseText);
+                            if (res.error) errMsg = res.error;
+                        } catch (_) {}
+                        return resolve({ success: false, error: `${file.name}: ${errMsg}` });
+                    }
+                };
+
+                currentXhr.onabort = function () {
+                    currentXhr = null;
+                    resolve({ success: false, cancelled: true });
+                };
+
+                currentXhr.onerror = function () {
+                    currentXhr = null;
+                    if (uploadCancelled) {
+                        return resolve({ success: false, cancelled: true });
+                    }
+                    resolve({ success: false, error: `${file.name}: Netzwerkfehler` });
+                };
+
+                currentXhr.send(formData);
+            });
+        }
+
+        // Process queue sequentially
+        for (let i = 0; i < totalCount; i++) {
+            if (uploadCancelled) break;
+
+            const res = await uploadSingleFile(files[i], i);
+
+            if (res.cancelled) break;
+
+            if (res.success) {
+                successCount += (res.count || 1);
+                // Dynamically update view every 2 uploads or at the end
+                if ((i + 1) % 2 === 0 || i === totalCount - 1) {
+                    fetchStats();
+                    loadMyPhotos();
                 }
-            } else if (xhrRef && xhrRef.status !== 0) {
-                try {
-                    const res = JSON.parse(xhrRef.responseText);
-                    showToast(res.error || 'Upload fehlgeschlagen.', 'error');
-                } catch (e) {
-                    showToast('Serverfehler beim Upload.', 'error');
-                }
+            } else if (res.error) {
+                errors.push(res.error);
             }
-        };
 
-        currentXhr.onabort = function () {
-            isUploading = false;
-            progressContainer.classList.add('hidden');
-            cameraInput.value = '';
-            currentXhr = null;
-        };
+            const stepPercent = Math.round(((i + 1) / totalCount) * 100);
+            progressBarFill.style.width = `${stepPercent}%`;
+            progressPercent.textContent = `${stepPercent}%`;
+        }
 
-        currentXhr.onerror = function () {
-            if (!currentXhr) return;
-            isUploading = false;
-            progressContainer.classList.add('hidden');
-            cameraInput.value = '';
-            currentXhr = null;
-            showToast('Netzwerkfehler beim Upload.', 'error');
-        };
+        // Cleanup state
+        isUploading = false;
+        progressContainer.classList.add('hidden');
+        cameraInput.value = '';
 
-        currentXhr.send(formData);
+        if (uploadCancelled) {
+            if (successCount > 0) {
+                showToast(`Abgebrochen: ${successCount} Foto(s) wurden bereits gespeichert.`, 'info', 4000);
+            }
+            fetchStats();
+            loadMyPhotos();
+            return;
+        }
+
+        fetchStats();
+        loadMyPhotos();
+
+        if (successCount > 0 && errors.length === 0) {
+            showToast(`🎉 Super! ${successCount} Foto(s) erfolgreich hochgeladen!`, 'success', 4500);
+        } else if (successCount > 0 && errors.length > 0) {
+            showToast(`⚠️ ${successCount} von ${totalCount} Fotos hochgeladen. Fehler bei: ${errors.join(', ')}`, 'warning', 6000);
+        } else if (errors.length > 0) {
+            showToast(`Upload fehlgeschlagen: ${errors[0]}`, 'error', 5000);
+        }
     }
 
     // ----------------------------------------------------
