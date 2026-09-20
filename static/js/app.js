@@ -165,7 +165,127 @@ document.addEventListener('DOMContentLoaded', () => {
 
         updateUI();
 
+        function uploadChunkedFile(item) {
+            return new Promise(async (resolve) => {
+                if (uploadCancelled) {
+                    return resolve({ success: false, cancelled: true });
+                }
+
+                const CHUNK_SIZE = 20 * 1024 * 1024; // 20 MB slices (bypasses Cloudflare Free 100 MB limit)
+                const totalChunks = Math.ceil(item.file.size / CHUNK_SIZE);
+                const fileId = 'chk_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+
+                for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                    if (uploadCancelled) {
+                        return resolve({ success: false, cancelled: true });
+                    }
+
+                    const start = chunkIndex * CHUNK_SIZE;
+                    const end = Math.min(item.file.size, start + CHUNK_SIZE);
+                    const chunkBlob = item.file.slice(start, end);
+
+                    // Retry up to 3 times per chunk on transient network failure
+                    let chunkSuccess = false;
+                    let lastError = null;
+
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                        if (uploadCancelled) {
+                            return resolve({ success: false, cancelled: true });
+                        }
+
+                        const chunkRes = await new Promise((chunkResolve) => {
+                            const formData = new FormData();
+                            formData.append('file_id', fileId);
+                            formData.append('chunk_index', chunkIndex);
+                            formData.append('total_chunks', totalChunks);
+                            formData.append('filename', item.file.name);
+                            formData.append('chunk', chunkBlob, item.file.name);
+
+                            const xhr = new XMLHttpRequest();
+                            activeXhrs.add(xhr);
+                            xhr.open('POST', '/api/upload-chunk', true);
+
+                            xhr.upload.onprogress = (e) => {
+                                if (e.lengthComputable && !uploadCancelled) {
+                                    const bytesUploaded = start + e.loaded;
+                                    fileProgress[item.index] = bytesUploaded / item.file.size;
+                                    updateUI();
+                                }
+                            };
+
+                            xhr.onload = function () {
+                                activeXhrs.delete(xhr);
+                                if (uploadCancelled) {
+                                    return chunkResolve({ success: false, cancelled: true });
+                                }
+                                if (xhr.status === 200) {
+                                    try {
+                                        const parsed = JSON.parse(xhr.responseText);
+                                        return chunkResolve({ success: true, data: parsed });
+                                    } catch (e) {
+                                        return chunkResolve({ success: false, error: 'Ungültige Serverantwort' });
+                                    }
+                                } else {
+                                    let msg = `HTTP ${xhr.status}`;
+                                    try {
+                                        const parsed = JSON.parse(xhr.responseText);
+                                        if (parsed.error) msg = parsed.error;
+                                    } catch (_) {}
+                                    return chunkResolve({ success: false, error: msg });
+                                }
+                            };
+
+                            xhr.onabort = function () {
+                                activeXhrs.delete(xhr);
+                                chunkResolve({ success: false, cancelled: true });
+                            };
+
+                            xhr.onerror = function () {
+                                activeXhrs.delete(xhr);
+                                chunkResolve({ success: false, error: 'Netzwerkfehler' });
+                            };
+
+                            xhr.send(formData);
+                        });
+
+                        if (chunkRes.cancelled) {
+                            return resolve({ success: false, cancelled: true });
+                        }
+
+                        if (chunkRes.success) {
+                            chunkSuccess = true;
+                            // If this was the final chunk, check for final server completion
+                            if (chunkIndex === totalChunks - 1) {
+                                fileProgress[item.index] = 1.0;
+                                updateUI();
+                                if (chunkRes.data && chunkRes.data.success) {
+                                    return resolve({ success: true, count: 1 });
+                                } else {
+                                    return resolve({ success: false, error: chunkRes.data?.error || 'Upload fehlgeschlagen' });
+                                }
+                            }
+                            break; // Proceed to next chunk
+                        } else {
+                            lastError = chunkRes.error;
+                            // Wait 1 second before retry
+                            await new Promise(r => setTimeout(r, 1000));
+                        }
+                    }
+
+                    if (!chunkSuccess) {
+                        return resolve({ success: false, error: `${item.file.name}: Chunk ${chunkIndex + 1}/${totalChunks} fehlgeschlagen (${lastError})` });
+                    }
+                }
+            });
+        }
+
         function uploadSingleFile(item) {
+            // Automatically switch to chunked upload for files > 20 MB to bypass Cloudflare 100 MB limit
+            const CHUNK_THRESHOLD = 20 * 1024 * 1024;
+            if (item.file.size > CHUNK_THRESHOLD) {
+                return uploadChunkedFile(item);
+            }
+
             return new Promise((resolve) => {
                 if (uploadCancelled) {
                     return resolve({ success: false, cancelled: true });

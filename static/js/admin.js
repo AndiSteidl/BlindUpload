@@ -137,41 +137,4 @@ document.addEventListener('DOMContentLoaded', () => {
             if (touchEndX > touchStartX + threshold) prevLightbox();
         }, { passive: true });
     }
-
-    // Trigger pCloud Migration button
-    const triggerMigrationBtn = document.getElementById('btn-trigger-migration');
-    if (triggerMigrationBtn) {
-        triggerMigrationBtn.addEventListener('click', async () => {
-            triggerMigrationBtn.disabled = true;
-            triggerMigrationBtn.textContent = '⏳ Migration läuft...';
-            try {
-                const res = await fetch('/admin/api/trigger-migration', { method: 'POST' });
-                const data = await res.json();
-                if (res.ok) {
-                    alert('Migration gestartet! Die bestehenden Medien werden im Hintergrund zu pCloud übertragen und lokal bereinigt.');
-                    const interval = setInterval(async () => {
-                        try {
-                            const statRes = await fetch('/admin/api/migration-status');
-                            const statData = await statRes.json();
-                            if (!statData.running) {
-                                clearInterval(interval);
-                                alert(`Migration abgeschlossen: ${statData.completed} von ${statData.total} Dateien erfolgreich nach pCloud übertragen.`);
-                                window.location.reload();
-                            }
-                        } catch (err) {
-                            clearInterval(interval);
-                        }
-                    }, 3000);
-                } else {
-                    alert(`Fehler: ${data.error || 'Migration konnte nicht gestartet werden.'}`);
-                    triggerMigrationBtn.disabled = false;
-                    triggerMigrationBtn.textContent = '🔄 Migration nach pCloud';
-                }
-            } catch (err) {
-                alert(`Netzwerkfehler: ${err.message}`);
-                triggerMigrationBtn.disabled = false;
-                triggerMigrationBtn.textContent = '🔄 Migration nach pCloud';
-            }
-        });
-    }
 });
