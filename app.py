@@ -6,11 +6,15 @@ import zipfile
 import threading
 import shutil
 import subprocess
+import requests
+import mimetypes
+import urllib.parse
+from requests.auth import HTTPBasicAuth
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from flask import (
     Flask, render_template, request, jsonify, session, 
-    send_from_directory, redirect, url_for, make_response, send_file
+    send_from_directory, redirect, url_for, make_response, send_file, Response
 )
 from PIL import Image, ImageOps, ImageDraw, ImageFont
 
@@ -25,12 +29,19 @@ app = Flask(__name__)
 
 # Config & Environment Variables
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'gabi-50th-birthday-secret-key-2026')
-app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 250 * 1024 * 1024))  # 250MB per file
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 1024 * 1024 * 1024))  # 1GB per file
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'Gabi50!')
 
-# Thread pool for asynchronous background thumbnail generation
-# max_workers=2 keeps CPU & RAM usage low and responsive for multiple concurrent users
-executor = ThreadPoolExecutor(max_workers=2)
+# pCloud Cloud-Speicher Konfiguration via WebDAV
+PCLOUD_ENABLED = os.environ.get('PCLOUD_ENABLED', 'false').lower() in ('true', '1', 'yes')
+PCLOUD_USERNAME = os.environ.get('PCLOUD_USERNAME', '').strip()
+PCLOUD_PASSWORD = os.environ.get('PCLOUD_PASSWORD', '').strip()
+PCLOUD_REGION = os.environ.get('PCLOUD_REGION', 'EU').strip().upper()
+PCLOUD_FOLDER = os.environ.get('PCLOUD_FOLDER', '/Gabis50').strip().rstrip('/')
+
+# Thread pool for asynchronous background tasks (thumbnail generation, pCloud upload & migration)
+# max_workers=3 allows concurrent thumbnails, pCloud uploads, and async migrations
+executor = ThreadPoolExecutor(max_workers=3)
 
 # Server-side upload concurrency limiter (max 5 simultaneous upload processes)
 UPLOAD_SEMAPHORE = threading.Semaphore(5)
@@ -67,12 +78,126 @@ def init_db():
                 uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 file_size INTEGER NOT NULL,
                 width INTEGER,
-                height INTEGER
+                height INTEGER,
+                storage_provider TEXT DEFAULT 'local'
             )
         ''')
+        # Migrate existing table if storage_provider column is missing
+        try:
+            conn.execute("ALTER TABLE photos ADD COLUMN storage_provider TEXT DEFAULT 'local';")
+        except Exception:
+            pass
         conn.commit()
 
 init_db()
+
+# ----------------------------------------------------
+# pCloud WebDAV Integration Helpers
+# ----------------------------------------------------
+def is_pcloud_configured():
+    return PCLOUD_ENABLED and bool(PCLOUD_USERNAME) and bool(PCLOUD_PASSWORD)
+
+def pcloud_base_url():
+    return 'https://ewebdav.pcloud.com' if PCLOUD_REGION == 'EU' else 'https://webdav.pcloud.com'
+
+def pcloud_get_auth():
+    return HTTPBasicAuth(PCLOUD_USERNAME, PCLOUD_PASSWORD)
+
+def pcloud_remote_url(filename=''):
+    base = pcloud_base_url()
+    folder = PCLOUD_FOLDER
+    if filename:
+        safe_filename = urllib.parse.quote(filename)
+        return f"{base}{folder}/uploads/{safe_filename}"
+    return f"{base}{folder}/uploads"
+
+def pcloud_ensure_dirs():
+    """Ensure remote folders exist on pCloud via WebDAV MKCOL."""
+    if not is_pcloud_configured():
+        return False
+    try:
+        auth = pcloud_get_auth()
+        base = pcloud_base_url()
+        parts = [p for p in f"{PCLOUD_FOLDER}/uploads".split('/') if p]
+        curr = ""
+        for part in parts:
+            curr += f"/{part}"
+            url = f"{base}{urllib.parse.quote(curr)}"
+            requests.request('MKCOL', url, auth=auth, timeout=15)
+        return True
+    except Exception as err:
+        app.logger.warning(f"pCloud ensure_dirs warning: {err}")
+        return False
+
+def pcloud_upload_file(local_path, filename):
+    """Upload file from local filesystem directly to pCloud via WebDAV PUT."""
+    if not is_pcloud_configured():
+        return False
+    try:
+        pcloud_ensure_dirs()
+        url = pcloud_remote_url(filename)
+        with open(local_path, 'rb') as f:
+            res = requests.put(url, data=f, auth=pcloud_get_auth(), timeout=(15, 600))
+        if res.status_code in (200, 201, 204):
+            return True
+        app.logger.error(f"pCloud PUT {filename} failed: {res.status_code} {res.text}")
+        return False
+    except Exception as err:
+        app.logger.error(f"pCloud upload error for {filename}: {err}")
+        return False
+
+def pcloud_delete_file(filename):
+    """Delete file from pCloud via WebDAV DELETE."""
+    if not is_pcloud_configured():
+        return False
+    try:
+        url = pcloud_remote_url(filename)
+        res = requests.delete(url, auth=pcloud_get_auth(), timeout=30)
+        return res.status_code in (200, 204, 404)
+    except Exception as err:
+        app.logger.error(f"pCloud delete error for {filename}: {err}")
+        return False
+
+def pcloud_stream_file(filename, download_name=None):
+    """Stream file from pCloud directly to HTTP client with Range-header support for video playback."""
+    if not is_pcloud_configured():
+        return None
+    try:
+        url = pcloud_remote_url(filename)
+        headers = {}
+        if 'Range' in request.headers:
+            headers['Range'] = request.headers['Range']
+
+        res = requests.get(url, auth=pcloud_get_auth(), headers=headers, stream=True, timeout=(15, 120))
+        if res.status_code not in (200, 206):
+            return None
+
+        content_type = res.headers.get('Content-Type')
+        guessed_type, _ = mimetypes.guess_type(filename)
+        if not content_type or content_type in ('application/octet-stream', 'application/x-download'):
+            if guessed_type:
+                content_type = guessed_type
+
+        resp_headers = {
+            'Content-Type': content_type or 'application/octet-stream',
+            'Accept-Ranges': 'bytes'
+        }
+        if download_name:
+            safe_download_name = urllib.parse.quote(download_name)
+            resp_headers['Content-Disposition'] = f'attachment; filename="{download_name}"; filename*=UTF-8\'\'{safe_download_name}'
+        if 'Content-Range' in res.headers:
+            resp_headers['Content-Range'] = res.headers['Content-Range']
+        if 'Content-Length' in res.headers:
+            resp_headers['Content-Length'] = res.headers['Content-Length']
+
+        return Response(
+            res.iter_content(chunk_size=128 * 1024),
+            status=res.status_code,
+            headers=resp_headers
+        )
+    except Exception as err:
+        app.logger.error(f"pCloud stream error for {filename}: {err}")
+        return None
 
 IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif', 'dng'}
 VIDEO_EXTENSIONS = {'mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv'}
@@ -163,6 +288,118 @@ def generate_thumbnail_task(original_path, thumb_path, photo_id=None):
     except Exception as err:
         app.logger.error(f"Thumbnail generation error for {original_path}: {err}")
 
+def process_upload_task(original_path, thumb_path, photo_id, out_filename):
+    """
+    Background worker:
+    1. Generate optimized JPEG thumbnail (local, ~20KB).
+    2. If pCloud configured, upload original to pCloud and remove local copy to keep HDD usage at 0 MB.
+    """
+    try:
+        # Step 1: Generate thumbnail while local file is guaranteed present
+        generate_thumbnail_task(original_path, thumb_path, photo_id)
+
+        # Step 2: Offload original to pCloud if enabled
+        if is_pcloud_configured() and os.path.exists(original_path):
+            success = pcloud_upload_file(original_path, out_filename)
+            if success:
+                with get_db() as conn:
+                    conn.execute("UPDATE photos SET storage_provider = 'pcloud' WHERE id = ?", (photo_id,))
+                    conn.commit()
+                try:
+                    os.remove(original_path)
+                    app.logger.info(f"Uploaded {out_filename} to pCloud and removed local copy.")
+                except Exception as e:
+                    app.logger.warning(f"Could not delete local original {original_path}: {e}")
+            else:
+                app.logger.error(f"Failed to upload {out_filename} to pCloud; kept local file as fallback.")
+    except Exception as err:
+        app.logger.error(f"Error in process_upload_task for {out_filename}: {err}")
+
+# Background Migration Tracking
+migration_status = {
+    'running': False,
+    'total': 0,
+    'completed': 0,
+    'errors': 0,
+    'last_run': None
+}
+
+def migrate_existing_files_to_pcloud():
+    """Background worker to migrate all existing local files to pCloud storage asynchronously."""
+    global migration_status
+    if not is_pcloud_configured():
+        app.logger.info("pCloud is not configured. Migration skipped.")
+        return
+
+    if migration_status['running']:
+        app.logger.info("Migration is already in progress.")
+        return
+
+    migration_status['running'] = True
+    migration_status['errors'] = 0
+    migration_status['completed'] = 0
+    
+    try:
+        app.logger.info("Starting background migration of existing data to pCloud...")
+        pcloud_ensure_dirs()
+
+        # Step 1: Query database for all files not yet on pCloud
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT id, filename, original_filename FROM photos WHERE storage_provider != 'pcloud' OR storage_provider IS NULL"
+            ).fetchall()
+        
+        # Step 2: Also inspect local filesystem in UPLOADS_DIR for any files
+        local_files = [f for f in os.listdir(UPLOADS_DIR) if not f.startswith('.')] if os.path.exists(UPLOADS_DIR) else []
+        
+        items_map = {}
+        for r in rows:
+            items_map[r['filename']] = r['id']
+            
+        for f in local_files:
+            if f not in items_map:
+                items_map[f] = None
+
+        migration_status['total'] = len(items_map)
+
+        for filename, photo_id in items_map.items():
+            local_path = os.path.join(UPLOADS_DIR, filename)
+            if not os.path.exists(local_path):
+                continue
+                
+            success = pcloud_upload_file(local_path, filename)
+            if success:
+                if photo_id:
+                    with get_db() as conn:
+                        conn.execute("UPDATE photos SET storage_provider = 'pcloud' WHERE id = ?", (photo_id,))
+                        conn.commit()
+                # Delete local file to free up disk space
+                try:
+                    os.remove(local_path)
+                    app.logger.info(f"Successfully migrated and removed local file: {filename}")
+                except Exception as e:
+                    app.logger.warning(f"Could not remove local file {local_path}: {e}")
+                migration_status['completed'] += 1
+            else:
+                migration_status['errors'] += 1
+                app.logger.error(f"Failed to migrate {filename} to pCloud.")
+                
+        migration_status['last_run'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        app.logger.info(f"pCloud migration complete: {migration_status['completed']}/{migration_status['total']} files migrated.")
+    except Exception as err:
+        app.logger.error(f"Fatal error in pCloud migration: {err}")
+    finally:
+        migration_status['running'] = False
+
+def start_startup_migration():
+    if is_pcloud_configured():
+        executor.submit(migrate_existing_files_to_pcloud)
+
+# Asynchronous migration trigger after short startup delay
+startup_timer = threading.Timer(2.0, start_startup_migration)
+startup_timer.daemon = True
+startup_timer.start()
+
 def ensure_session():
     if 'user_id' not in session:
         session['user_id'] = str(uuid.uuid4())
@@ -241,13 +478,13 @@ def upload_file():
                         # 2. Insert metadata into SQLite immediately
                         with get_db() as conn:
                             conn.execute('''
-                                INSERT INTO photos (id, filename, original_filename, thumbnail, session_id, file_size, width, height)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                INSERT INTO photos (id, filename, original_filename, thumbnail, session_id, file_size, width, height, storage_provider)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'local')
                             ''', (photo_id, out_filename, original_filename, thumb_filename, user_id, file_size, 0, 0))
                             conn.commit()
 
-                        # 3. Offload CPU-heavy thumbnail creation to background executor
-                        executor.submit(generate_thumbnail_task, out_path, thumb_path, photo_id)
+                        # 3. Offload thumbnail creation + pCloud upload & cleanup to background executor
+                        executor.submit(process_upload_task, out_path, thumb_path, photo_id, out_filename)
                             
                         uploaded_items.append({
                             'id': photo_id,
@@ -298,15 +535,25 @@ def delete_photo(photo_id):
         if photo['session_id'] != user_id:
             return jsonify({'error': 'Keine Berechtigung zum Löschen dieses Fotos.'}), 403
             
-        # Delete files
+        # Delete local files if present
         out_path = os.path.join(UPLOADS_DIR, photo['filename'])
         thumb_path = os.path.join(THUMBNAILS_DIR, photo['thumbnail'])
         
         if os.path.exists(out_path):
-            os.remove(out_path)
+            try:
+                os.remove(out_path)
+            except Exception:
+                pass
         if os.path.exists(thumb_path) and thumb_path != out_path:
-            os.remove(thumb_path)
+            try:
+                os.remove(thumb_path)
+            except Exception:
+                pass
             
+        # Also remove from pCloud if stored remotely
+        if photo['storage_provider'] == 'pcloud' or is_pcloud_configured():
+            pcloud_delete_file(photo['filename'])
+
         conn.execute('DELETE FROM photos WHERE id = ?', (photo_id,))
         conn.commit()
         
@@ -314,12 +561,30 @@ def delete_photo(photo_id):
 
 @app.route('/uploads/<filename>')
 def serve_upload(filename):
-    if request.args.get('download', '0') == '1':
-        with get_db() as conn:
-            photo = conn.execute('SELECT original_filename FROM photos WHERE filename = ?', (filename,)).fetchone()
-            download_name = photo['original_filename'] if photo else filename
-        return send_from_directory(UPLOADS_DIR, filename, as_attachment=True, download_name=download_name)
-    return send_from_directory(UPLOADS_DIR, filename)
+    local_path = os.path.join(UPLOADS_DIR, filename)
+    is_download = request.args.get('download', '0') == '1'
+
+    download_name = None
+    storage_provider = 'local'
+    with get_db() as conn:
+        photo = conn.execute('SELECT original_filename, storage_provider FROM photos WHERE filename = ?', (filename,)).fetchone()
+        if photo:
+            download_name = photo['original_filename']
+            storage_provider = photo['storage_provider'] or 'local'
+
+    # 1. If file is available locally on disk, serve it directly
+    if os.path.exists(local_path):
+        if is_download:
+            return send_from_directory(UPLOADS_DIR, filename, as_attachment=True, download_name=download_name or filename)
+        return send_from_directory(UPLOADS_DIR, filename)
+
+    # 2. If file has been moved to pCloud, stream it directly with Range support
+    if storage_provider == 'pcloud' or is_pcloud_configured():
+        stream_resp = pcloud_stream_file(filename, download_name=download_name if is_download else None)
+        if stream_resp is not None:
+            return stream_resp
+
+    return "Datei nicht gefunden", 404
 
 @app.route('/thumbnails/<filename>')
 def serve_thumbnail(filename):
@@ -327,9 +592,9 @@ def serve_thumbnail(filename):
     if os.path.exists(thumb_path):
         return send_from_directory(THUMBNAILS_DIR, filename)
         
-    # If thumbnail is still being generated in background thread, fallback to original
+    # If thumbnail is still being generated or missing, fallback
     with get_db() as conn:
-        photo = conn.execute('SELECT filename FROM photos WHERE thumbnail = ?', (filename,)).fetchone()
+        photo = conn.execute('SELECT filename, storage_provider FROM photos WHERE thumbnail = ?', (filename,)).fetchone()
         if photo:
             orig_path = os.path.join(UPLOADS_DIR, photo['filename'])
             if os.path.exists(orig_path):
@@ -340,6 +605,8 @@ def serve_thumbnail(filename):
                 except Exception:
                     pass
                 return send_from_directory(UPLOADS_DIR, photo['filename'])
+            elif photo['storage_provider'] == 'pcloud' or is_pcloud_configured():
+                return redirect(url_for('serve_upload', filename=photo['filename']))
 
     return send_from_directory(THUMBNAILS_DIR, filename)
 
@@ -367,10 +634,17 @@ def admin():
                 stats_row = conn.execute('''
                     SELECT COUNT(*) as total_photos, 
                            COUNT(DISTINCT session_id) as total_guests,
-                           COALESCE(SUM(file_size), 0) as total_size
+                           COALESCE(SUM(file_size), 0) as total_size,
+                           SUM(CASE WHEN storage_provider = 'pcloud' THEN 1 ELSE 0 END) as pcloud_photos,
+                           SUM(CASE WHEN storage_provider != 'pcloud' OR storage_provider IS NULL THEN 1 ELSE 0 END) as local_photos
                     FROM photos
                 ''').fetchone()
-                stats = dict(stats_row) if stats_row else {'total_photos': 0, 'total_guests': 0, 'total_size': 0}
+                stats = dict(stats_row) if stats_row else {
+                    'total_photos': 0, 'total_guests': 0, 'total_size': 0,
+                    'pcloud_photos': 0, 'local_photos': 0
+                }
+                stats['pcloud_enabled'] = is_pcloud_configured()
+                stats['pcloud_folder'] = PCLOUD_FOLDER
             return render_template('admin.html', photos=photos, stats=stats)
         except Exception as e:
             app.logger.error(f"Fehler im Admin-Bereich: {e}")
@@ -383,6 +657,24 @@ def admin_logout():
     session.pop('admin_authed', None)
     return redirect(url_for('admin'))
 
+@app.route('/admin/api/migration-status')
+def admin_migration_status():
+    if not session.get('admin_authed', False):
+        return jsonify({'error': 'Unauthorized'}), 401
+    return jsonify(migration_status)
+
+@app.route('/admin/api/trigger-migration', methods=['POST'])
+def admin_trigger_migration():
+    if not session.get('admin_authed', False):
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not is_pcloud_configured():
+        return jsonify({'error': 'pCloud ist nicht konfiguriert (bitte in der .env PCLOUD_ENABLED=true und Zugangsdaten setzen).'}), 400
+    if migration_status['running']:
+        return jsonify({'message': 'Migration läuft bereits im Hintergrund.'}), 200
+    
+    executor.submit(migrate_existing_files_to_pcloud)
+    return jsonify({'success': True, 'message': 'Hintergrund-Migration nach pCloud wurde gestartet.'})
+
 @app.route('/admin/download-zip')
 def admin_download_zip():
     if not session.get('admin_authed', False):
@@ -391,19 +683,30 @@ def admin_download_zip():
     memory_file = io.BytesIO()
     with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
         with get_db() as conn:
-            photos = conn.execute('SELECT filename, original_filename FROM photos').fetchall()
+            photos = conn.execute('SELECT filename, original_filename, storage_provider FROM photos').fetchall()
             for idx, photo in enumerate(photos, 1):
+                ext = os.path.splitext(photo['filename'])[1]
+                original_name = photo['original_filename']
+                if not original_name.lower().endswith(ext.lower()):
+                    original_name = f"{original_name}{ext}"
+                is_vid = is_video_file(photo['filename'])
+                prefix = "Video" if is_vid else "Foto"
+                zip_entry_name = f"{prefix}_{idx:03d}_{original_name}"
+
                 file_path = os.path.join(UPLOADS_DIR, photo['filename'])
                 if os.path.exists(file_path):
-                    # Preserve exact original filename and extension in ZIP archive
-                    ext = os.path.splitext(photo['filename'])[1]
-                    original_name = photo['original_filename']
-                    if not original_name.lower().endswith(ext.lower()):
-                        original_name = f"{original_name}{ext}"
-                    is_vid = is_video_file(photo['filename'])
-                    prefix = "Video" if is_vid else "Foto"
-                    zip_entry_name = f"{prefix}_{idx:03d}_{original_name}"
+                    # Local file
                     zf.write(file_path, arcname=zip_entry_name)
+                elif photo['storage_provider'] == 'pcloud' or is_pcloud_configured():
+                    # Stream from pCloud directly into ZIP entry without touching local disk
+                    try:
+                        url = pcloud_remote_url(photo['filename'])
+                        with requests.get(url, auth=pcloud_get_auth(), stream=True, timeout=(15, 180)) as r:
+                            if r.status_code == 200:
+                                with zf.open(zip_entry_name, 'w') as zf_entry:
+                                    shutil.copyfileobj(r.raw, zf_entry)
+                    except Exception as err:
+                        app.logger.error(f"Error streaming pCloud file {photo['filename']} into zip: {err}")
                     
     memory_file.seek(0)
     now_str = datetime.now().strftime('%Y%m%d_%H%M')

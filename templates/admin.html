@@ -38,6 +38,22 @@
                 </div>
                 <div class="stat-label">Gesamtspeicher</div>
             </div>
+            <div class="stat-card">
+                <div class="stat-value" style="font-size: 1.15rem; padding-top: 6px;">
+                    {% if stats.pcloud_enabled %}
+                        <span style="color: #22c55e;">☁️ pCloud</span>
+                    {% else %}
+                        <span style="color: #eab308;">💾 Lokal</span>
+                    {% endif %}
+                </div>
+                <div class="stat-label">
+                    {% if stats.pcloud_enabled %}
+                        {{ stats.pcloud_photos }} Cloud / {{ stats.local_photos }} Lokal
+                    {% else %}
+                        {{ stats.local_photos }} auf lokaler Disk
+                    {% endif %}
+                </div>
+            </div>
         </section>
 
         <div class="admin-actions">
@@ -45,6 +61,11 @@
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 Alle Fotos als ZIP herunterladen
             </a>
+            {% if stats.pcloud_enabled and stats.local_photos > 0 %}
+                <button id="btn-trigger-migration" class="btn btn-outline" style="border-color: #38bdf8; color: #38bdf8;">
+                    🔄 Migration nach pCloud ({{ stats.local_photos }})
+                </button>
+            {% endif %}
             <a href="{{ url_for('index') }}" class="btn btn-outline">Zurück zur Hauptseite</a>
         </div>
 
