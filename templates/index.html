@@ -36,13 +36,13 @@
                     <div class="file-action-buttons">
                         <label for="camera-input" class="btn btn-retro touch-btn btn-hero">
                             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-                            Kamera / Fotos wählen
+                            Kamera / Fotos & Videos
                         </label>
-                        <input type="file" id="camera-input" accept="image/*" multiple style="display: none;">
+                        <input type="file" id="camera-input" accept="image/*,video/*" multiple style="display: none;">
                     </div>
 
-                    <p class="upload-hint">Tippe auf den Button oder ziehe Bilder hierhin</p>
-                    <p class="privacy-note">🔒 <strong>Blind Upload:</strong> Deine Fotos sind für andere Gäste unsichtbar.</p>
+                    <p class="upload-hint">Tippe auf den Button oder ziehe Dateien hierhin</p>
+                    <p class="privacy-note">🔒 <strong>Blind Upload:</strong> Deine Medien sind für andere Gäste unsichtbar.</p>
                 </div>
 
                 <!-- Realtime Upload Progress Bar & Cancel Button -->
@@ -112,6 +112,7 @@
         <button class="modal-close" id="modal-close-btn">&times;</button>
         <div class="modal-body">
             <img src="" id="lightbox-img" alt="Vorschau Foto">
+            <video src="" id="lightbox-video" controls playsinline class="hidden"></video>
         </div>
     </div>
 

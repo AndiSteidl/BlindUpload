@@ -49,16 +49,22 @@
         </div>
 
         <section class="admin-gallery">
-            <h2>Alle hochgeladenen Fotos ({{ photos|length }})</h2>
+            <h2>Alle hochgeladenen Medien ({{ photos|length }})</h2>
             {% if photos %}
                 <div class="gallery-grid">
                     {% for photo in photos %}
-                        <div class="gallery-card" 
+                        {% set ext = photo.filename.rsplit('.', 1)[-1].lower() %}
+                        {% set is_vid = ext in ['mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv'] %}
+                        <div class="gallery-card {% if is_vid %}is-video{% endif %}" 
                              data-id="{{ photo.id }}"
                              data-original-filename="{{ photo.original_filename }}"
                              data-uploaded-at="{{ photo.uploaded_at }}"
-                             data-full-url="{{ url_for('serve_upload', filename=photo.filename) }}">
+                             data-full-url="{{ url_for('serve_upload', filename=photo.filename) }}"
+                             data-is-video="{{ 'true' if is_vid else 'false' }}">
                             <img src="{{ url_for('serve_thumbnail', filename=photo.thumbnail) }}" alt="{{ photo.original_filename }}" loading="lazy">
+                            {% if is_vid %}
+                                <span class="video-badge">🎬 Video</span>
+                            {% endif %}
                             <div class="gallery-card-info">
                                 <span class="photo-filename" title="{{ photo.original_filename }}">{{ photo.original_filename }}</span>
                                 <span class="photo-date">{{ photo.uploaded_at }}</span>
@@ -71,7 +77,7 @@
                 </div>
             {% else %}
                 <div class="empty-state">
-                    <p>Noch keine Fotos hochgeladen.</p>
+                    <p>Noch keine Medien hochgeladen.</p>
                 </div>
             {% endif %}
         </section>
@@ -80,20 +86,21 @@
     <!-- Admin Lightbox Modal -->
     <div class="modal hidden admin-lightbox" id="admin-lightbox-modal">
         <button class="modal-close" id="admin-lightbox-close" title="Schließen">&times;</button>
-        <button class="lightbox-nav lightbox-prev" id="admin-lightbox-prev" title="Vorheriges Bild">&#10094;</button>
-        <button class="lightbox-nav lightbox-next" id="admin-lightbox-next" title="Nächstes Bild">&#10095;</button>
+        <button class="lightbox-nav lightbox-prev" id="admin-lightbox-prev" title="Vorheriges Element">&#10094;</button>
+        <button class="lightbox-nav lightbox-next" id="admin-lightbox-next" title="Nächstes Element">&#10095;</button>
 
         <div class="modal-body admin-lightbox-body">
             <img src="" id="admin-lightbox-img" alt="Vorschau Foto" title="Bild gedrückt halten zum Sichern in Fotos">
+            <video src="" id="admin-lightbox-video" controls playsinline class="hidden"></video>
             <div class="lightbox-footer">
                 <div class="lightbox-details">
                     <h3 id="admin-lightbox-title" class="lightbox-filename">--</h3>
                     <p id="admin-lightbox-meta" class="lightbox-meta">--</p>
-                    <span class="ios-tip">💡 <strong>iPhone Tipp:</strong> Bild gedrückt halten ➔ <em>"In Fotos sichern"</em></span>
+                    <span class="ios-tip" id="admin-lightbox-tip">💡 <strong>Tipp:</strong> Datei gedrückt halten ➔ <em>"In Fotos sichern"</em></span>
                 </div>
                 <div class="lightbox-actions">
-                    <a href="#" target="_blank" class="btn btn-gold btn-sm" id="admin-lightbox-open" title="Bild in neuem Tab öffnen">
-                        🖼️ Bild öffnen (In Fotos sichern)
+                    <a href="#" target="_blank" class="btn btn-gold btn-sm" id="admin-lightbox-open" title="Datei in neuem Tab öffnen">
+                        🔍 Öffnen / In Fotos sichern
                     </a>
                     <a href="#" class="btn btn-outline btn-sm" id="admin-lightbox-download" download title="Datei herunterladen">
                         ⬇️ Herunterladen

@@ -4,13 +4,15 @@ import sqlite3
 import io
 import zipfile
 import threading
+import shutil
+import subprocess
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from flask import (
     Flask, render_template, request, jsonify, session, 
     send_from_directory, redirect, url_for, make_response, send_file
 )
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw, ImageFont
 
 # Register HEIC/HEIF support in Pillow if available
 try:
@@ -23,7 +25,7 @@ app = Flask(__name__)
 
 # Config & Environment Variables
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'gabi-50th-birthday-secret-key-2026')
-app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 100 * 1024 * 1024))  # 100MB per file
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 250 * 1024 * 1024))  # 250MB per file
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'Gabi50!')
 
 # Thread pool for asynchronous background thumbnail generation
@@ -72,9 +74,74 @@ def init_db():
 
 init_db()
 
+IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif', 'dng'}
+VIDEO_EXTENSIONS = {'mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv'}
+ALLOWED_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def is_video_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in VIDEO_EXTENSIONS
+
+def generate_video_thumbnail(original_path, thumb_path):
+    """Generate thumbnail for video: ffmpeg frame extraction with elegant Pillow poster fallback."""
+    # 1. Try ffmpeg frame extraction if installed
+    ffmpeg_bin = shutil.which('ffmpeg')
+    if ffmpeg_bin:
+        try:
+            cmd = [
+                ffmpeg_bin, '-y', '-ss', '00:00:00.5',
+                '-i', original_path,
+                '-vframes', '1',
+                '-vf', 'scale=500:500:force_original_aspect_ratio=decrease,pad=500:500:(ow-iw)/2:(oh-ih)/2:black',
+                thumb_path
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+            if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
+                return
+        except Exception as e:
+            app.logger.warning(f"ffmpeg extraction failed for {original_path}: {e}")
+
+    # 2. Pure Python fallback: Stylish retro video card
+    try:
+        img = Image.new('RGB', (500, 500), color=(20, 24, 36))
+        draw = ImageDraw.Draw(img)
+
+        # Subtle gold decorative accents top & bottom
+        for x in range(0, 500, 25):
+            if (x // 25) % 2 == 0:
+                draw.rectangle([x, 0, x + 25, 10], fill=(234, 179, 8))
+                draw.rectangle([x, 490, x + 25, 500], fill=(234, 179, 8))
+
+        # Golden play button circle
+        circle_box = [190, 180, 310, 300]
+        draw.ellipse(circle_box, fill=(245, 158, 11), outline=(254, 240, 138), width=3)
+
+        # White play triangle
+        play_triangle = [(235, 215), (235, 265), (275, 240)]
+        draw.polygon(play_triangle, fill=(255, 255, 255))
+
+        # Video format badge at bottom
+        ext = original_path.rsplit('.', 1)[1].upper() if '.' in original_path else 'VIDEO'
+        draw.rectangle([170, 340, 330, 375], fill=(30, 41, 59), outline=(71, 85, 105), width=1)
+        try:
+            font = ImageFont.load_default()
+            draw.text((250, 357), f"VIDEO ({ext})", fill=(254, 240, 138), anchor="mm", font=font)
+        except Exception:
+            draw.text((215, 350), f"VIDEO ({ext})", fill=(254, 240, 138))
+
+        img.save(thumb_path, 'JPEG', quality=85, optimize=True)
+    except Exception as err:
+        app.logger.error(f"Fallback video thumbnail generation failed: {err}")
+
 def generate_thumbnail_task(original_path, thumb_path, photo_id=None):
     """Background task to generate optimized JPEG thumbnail without blocking HTTP request workers."""
     try:
+        if is_video_file(original_path):
+            generate_video_thumbnail(original_path, thumb_path)
+            return
+
         with Image.open(original_path) as img:
             try:
                 img = ImageOps.exif_transpose(img)
@@ -95,11 +162,6 @@ def generate_thumbnail_task(original_path, thumb_path, photo_id=None):
                 conn.commit()
     except Exception as err:
         app.logger.error(f"Thumbnail generation error for {original_path}: {err}")
-
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif', 'dng'}
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def ensure_session():
     if 'user_id' not in session:
@@ -338,7 +400,9 @@ def admin_download_zip():
                     original_name = photo['original_filename']
                     if not original_name.lower().endswith(ext.lower()):
                         original_name = f"{original_name}{ext}"
-                    zip_entry_name = f"Foto_{idx:03d}_{original_name}"
+                    is_vid = is_video_file(photo['filename'])
+                    prefix = "Video" if is_vid else "Foto"
+                    zip_entry_name = f"{prefix}_{idx:03d}_{original_name}"
                     zf.write(file_path, arcname=zip_entry_name)
                     
     memory_file.seek(0)
@@ -347,7 +411,7 @@ def admin_download_zip():
         memory_file,
         mimetype='application/zip',
         as_attachment=True,
-        download_name=f'Gabi_50_Geburtstag_Fotos_{now_str}.zip'
+        download_name=f'Gabi_50_Geburtstag_Medien_{now_str}.zip'
     )
 
 if __name__ == '__main__':

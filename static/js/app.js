@@ -22,7 +22,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Lightbox Elements
     const lightboxModal = document.getElementById('lightbox-modal');
     const lightboxImg = document.getElementById('lightbox-img');
+    const lightboxVideo = document.getElementById('lightbox-video');
     const modalCloseBtn = document.getElementById('modal-close-btn');
+
+    function isVideoUrl(url) {
+        if (!url) return false;
+        const ext = url.split('?')[0].split('.').pop().toLowerCase();
+        return ['mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv'].includes(ext);
+    }
 
     // Concurrency & State Variables (Max 5 parallel uploads)
     const MAX_CONCURRENT = 5;
@@ -352,14 +359,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
 
-                myPhotosGrid.innerHTML = photos.map(photo => `
-                    <div class="gallery-card" data-id="${photo.id}" data-full="/uploads/${photo.filename}">
-                        <img src="/thumbnails/${photo.thumbnail}" alt="${photo.original_filename}" loading="lazy">
-                        <button class="delete-btn" data-id="${photo.id}" title="Dieses Foto löschen">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
-                        </button>
-                    </div>
-                `).join('');
+                myPhotosGrid.innerHTML = photos.map(photo => {
+                    const isVid = isVideoUrl(photo.filename);
+                    const videoBadgeHtml = isVid ? '<span class="video-badge">🎬 Video</span>' : '';
+                    const videoClass = isVid ? 'gallery-card is-video' : 'gallery-card';
+                    return `
+                        <div class="${videoClass}" data-id="${photo.id}" data-full="/uploads/${photo.filename}" data-is-video="${isVid}">
+                            <img src="/thumbnails/${photo.thumbnail}" alt="${photo.original_filename}" loading="lazy">
+                            ${videoBadgeHtml}
+                            <button class="delete-btn" data-id="${photo.id}" title="Dieses Element löschen">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                            </button>
+                        </div>
+                    `;
+                }).join('');
 
                 // Attach Handlers
                 document.querySelectorAll('.gallery-card').forEach(card => {
@@ -400,25 +413,48 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ----------------------------------------------------
-    // Lightbox Logic
+    // Lightbox Logic (Photo & Video Player)
     // ----------------------------------------------------
     function openLightbox(url) {
-        lightboxImg.src = url;
+        const isVid = isVideoUrl(url);
+        if (isVid) {
+            if (lightboxImg) lightboxImg.classList.add('hidden');
+            if (lightboxVideo) {
+                lightboxVideo.classList.remove('hidden');
+                lightboxVideo.src = url;
+                lightboxVideo.play().catch(() => {});
+            }
+        } else {
+            if (lightboxVideo) {
+                lightboxVideo.classList.add('hidden');
+                lightboxVideo.pause();
+                lightboxVideo.src = '';
+            }
+            if (lightboxImg) {
+                lightboxImg.classList.remove('hidden');
+                lightboxImg.src = url;
+            }
+        }
         lightboxModal.classList.remove('hidden');
     }
 
+    function closeLightbox() {
+        lightboxModal.classList.add('hidden');
+        if (lightboxImg) lightboxImg.src = '';
+        if (lightboxVideo) {
+            lightboxVideo.pause();
+            lightboxVideo.src = '';
+        }
+    }
+
     if (modalCloseBtn) {
-        modalCloseBtn.addEventListener('click', () => {
-            lightboxModal.classList.add('hidden');
-            lightboxImg.src = '';
-        });
+        modalCloseBtn.addEventListener('click', closeLightbox);
     }
 
     if (lightboxModal) {
         lightboxModal.addEventListener('click', (e) => {
             if (e.target === lightboxModal) {
-                lightboxModal.classList.add('hidden');
-                lightboxImg.src = '';
+                closeLightbox();
             }
         });
     }

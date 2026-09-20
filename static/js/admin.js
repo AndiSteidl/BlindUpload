@@ -2,6 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // UI Elements
     const lightboxModal = document.getElementById('admin-lightbox-modal');
     const lightboxImg = document.getElementById('admin-lightbox-img');
+    const lightboxVideo = document.getElementById('admin-lightbox-video');
     const lightboxTitle = document.getElementById('admin-lightbox-title');
     const lightboxMeta = document.getElementById('admin-lightbox-meta');
     const lightboxCloseBtn = document.getElementById('admin-lightbox-close');
@@ -9,6 +10,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const lightboxNextBtn = document.getElementById('admin-lightbox-next');
     const lightboxOpenBtn = document.getElementById('admin-lightbox-open');
     const lightboxDownloadBtn = document.getElementById('admin-lightbox-download');
+
+    function isVideoUrl(url) {
+        if (!url) return false;
+        const ext = url.split('?')[0].split('.').pop().toLowerCase();
+        return ['mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv'].includes(ext);
+    }
 
     // Collect all photo cards
     const photoCards = Array.from(document.querySelectorAll('.admin-gallery .gallery-card'));
@@ -26,14 +33,33 @@ document.addEventListener('DOMContentLoaded', () => {
         if (index < 0 || index >= photoData.length) return;
         currentIndex = index;
         const item = photoData[currentIndex];
+        const isVid = isVideoUrl(item.fullUrl);
 
-        lightboxImg.src = item.fullUrl;
+        if (isVid) {
+            if (lightboxImg) lightboxImg.classList.add('hidden');
+            if (lightboxVideo) {
+                lightboxVideo.classList.remove('hidden');
+                lightboxVideo.src = item.fullUrl;
+                lightboxVideo.play().catch(() => {});
+            }
+        } else {
+            if (lightboxVideo) {
+                lightboxVideo.classList.add('hidden');
+                lightboxVideo.pause();
+                lightboxVideo.src = '';
+            }
+            if (lightboxImg) {
+                lightboxImg.classList.remove('hidden');
+                lightboxImg.src = item.fullUrl;
+            }
+        }
+
         if (lightboxTitle) lightboxTitle.textContent = item.originalFilename || '';
         if (lightboxMeta) lightboxMeta.textContent = `Hochgeladen: ${item.uploadedAt || ''}`;
         if (lightboxOpenBtn) lightboxOpenBtn.href = item.fullUrl;
         if (lightboxDownloadBtn) {
             lightboxDownloadBtn.href = `${item.fullUrl}?download=1`;
-            lightboxDownloadBtn.setAttribute('download', item.originalFilename || 'foto');
+            lightboxDownloadBtn.setAttribute('download', item.originalFilename || (isVid ? 'video' : 'foto'));
         }
 
         lightboxModal.classList.remove('hidden');
@@ -42,7 +68,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function closeLightbox() {
         lightboxModal.classList.add('hidden');
-        lightboxImg.src = '';
+        if (lightboxImg) lightboxImg.src = '';
+        if (lightboxVideo) {
+            lightboxVideo.pause();
+            lightboxVideo.src = '';
+        }
         document.body.style.overflow = '';
         currentIndex = -1;
     }
