@@ -3,6 +3,7 @@ import uuid
 import sqlite3
 import io
 import zipfile
+import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from flask import (
@@ -28,6 +29,11 @@ ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'Gabi50!')
 # Thread pool for asynchronous background thumbnail generation
 # max_workers=2 keeps CPU & RAM usage low and responsive for multiple concurrent users
 executor = ThreadPoolExecutor(max_workers=2)
+
+# Server-side upload concurrency limiter (max 5 simultaneous upload processes)
+UPLOAD_SEMAPHORE = threading.Semaphore(5)
+active_uploads_lock = threading.Lock()
+active_uploads_count = 0
 
 # Data directories
 DATA_DIR = os.environ.get('DATA_DIR', os.path.join(os.path.abspath(os.path.dirname(__file__)), 'data'))
@@ -121,10 +127,14 @@ def get_stats():
         user_id = ensure_session()
         my_row = conn.execute('SELECT COUNT(*) as count FROM photos WHERE session_id = ?', (user_id,)).fetchone()
         my_photos = my_row['count'] if my_row else 0
+
+    with active_uploads_lock:
+        current_active = active_uploads_count
         
     return jsonify({
         'total_photos': total_photos,
-        'my_photos': my_photos
+        'my_photos': my_photos,
+        'active_uploads': current_active
     })
 
 @app.route('/api/upload', methods=['POST'])
@@ -142,47 +152,56 @@ def upload_file():
     uploaded_items = []
     errors = []
 
-    for file in files:
-        if file and allowed_file(file.filename):
-            try:
-                original_filename = file.filename
-                ext = original_filename.rsplit('.', 1)[1].lower()
-                photo_id = str(uuid.uuid4())
-                
-                # PRESERVE EXACT ORIGINAL EXTENSION & BYTES (HEIC, JPG, PNG, etc.)
-                out_filename = f"{photo_id}.{ext}"
-                thumb_filename = f"thumb_{photo_id}.jpg"
-                
-                out_path = os.path.join(UPLOADS_DIR, out_filename)
-                thumb_path = os.path.join(THUMBNAILS_DIR, thumb_filename)
-                
-                # 1. Save original file 100% UNTOUCHED
-                file.save(out_path)
-                file_size = os.path.getsize(out_path)
-                
-                # 2. Insert metadata into SQLite immediately
-                with get_db() as conn:
-                    conn.execute('''
-                        INSERT INTO photos (id, filename, original_filename, thumbnail, session_id, file_size, width, height)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (photo_id, out_filename, original_filename, thumb_filename, user_id, file_size, 0, 0))
-                    conn.commit()
+    global active_uploads_count
+    with active_uploads_lock:
+        active_uploads_count += 1
 
-                # 3. Offload CPU-heavy thumbnail creation to background executor
-                executor.submit(generate_thumbnail_task, out_path, thumb_path, photo_id)
-                    
-                uploaded_items.append({
-                    'id': photo_id,
-                    'filename': out_filename,
-                    'original_filename': original_filename,
-                    'thumbnail': thumb_filename,
-                    'uploaded_at': datetime.now().strftime('%H:%M:%S'),
-                    'file_size': file_size
-                })
-            except Exception as e:
-                errors.append(f"{file.filename}: {str(e)}")
-        else:
-            errors.append(f"{file.filename}: Ungültiges Dateiformat.")
+    try:
+        with UPLOAD_SEMAPHORE:
+            for file in files:
+                if file and allowed_file(file.filename):
+                    try:
+                        original_filename = file.filename
+                        ext = original_filename.rsplit('.', 1)[1].lower()
+                        photo_id = str(uuid.uuid4())
+                        
+                        # PRESERVE EXACT ORIGINAL EXTENSION & BYTES (HEIC, JPG, PNG, etc.)
+                        out_filename = f"{photo_id}.{ext}"
+                        thumb_filename = f"thumb_{photo_id}.jpg"
+                        
+                        out_path = os.path.join(UPLOADS_DIR, out_filename)
+                        thumb_path = os.path.join(THUMBNAILS_DIR, thumb_filename)
+                        
+                        # 1. Save original file 100% UNTOUCHED
+                        file.save(out_path)
+                        file_size = os.path.getsize(out_path)
+                        
+                        # 2. Insert metadata into SQLite immediately
+                        with get_db() as conn:
+                            conn.execute('''
+                                INSERT INTO photos (id, filename, original_filename, thumbnail, session_id, file_size, width, height)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (photo_id, out_filename, original_filename, thumb_filename, user_id, file_size, 0, 0))
+                            conn.commit()
+
+                        # 3. Offload CPU-heavy thumbnail creation to background executor
+                        executor.submit(generate_thumbnail_task, out_path, thumb_path, photo_id)
+                            
+                        uploaded_items.append({
+                            'id': photo_id,
+                            'filename': out_filename,
+                            'original_filename': original_filename,
+                            'thumbnail': thumb_filename,
+                            'uploaded_at': datetime.now().strftime('%H:%M:%S'),
+                            'file_size': file_size
+                        })
+                    except Exception as e:
+                        errors.append(f"{file.filename}: {str(e)}")
+                else:
+                    errors.append(f"{file.filename}: Ungültiges Dateiformat.")
+    finally:
+        with active_uploads_lock:
+            active_uploads_count = max(0, active_uploads_count - 1)
 
     if not uploaded_items and errors:
         return jsonify({'error': 'Upload fehlgeschlagen.', 'details': errors}), 400

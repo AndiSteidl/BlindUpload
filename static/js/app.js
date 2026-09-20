@@ -14,19 +14,26 @@ document.addEventListener('DOMContentLoaded', () => {
     const toggleMyPhotosBtn = document.getElementById('toggle-my-photos-btn');
     const myPhotosContainer = document.getElementById('my-photos-container');
     const toastContainer = document.getElementById('toast-container');
+    const queueActiveText = document.getElementById('queue-active-text');
+    const queueWaitingText = document.getElementById('queue-waiting-text');
+    const activeUploadsLivePill = document.getElementById('active-uploads-live-pill');
+    const serverActiveCount = document.getElementById('server-active-count');
 
     // Lightbox Elements
     const lightboxModal = document.getElementById('lightbox-modal');
     const lightboxImg = document.getElementById('lightbox-img');
     const modalCloseBtn = document.getElementById('modal-close-btn');
 
-    // State Variables
+    // Concurrency & State Variables (Max 5 parallel uploads)
+    const MAX_CONCURRENT = 5;
     let isUploading = false;
-    let currentXhr = null;
+    let uploadCancelled = false;
+    const activeXhrs = new Set();
 
-    // Initialize App
+    // Initialize App & periodic live stats polling
     fetchStats();
     loadMyPhotos();
+    setInterval(fetchStats, 15000);
 
     // ----------------------------------------------------
     // Toggle Discreet "Meine Fotos" Section
@@ -47,18 +54,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ----------------------------------------------------
+    // Cancel Upload Handler (Aborts all active queue workers)
     // ----------------------------------------------------
-    // Cancel Upload Handler
-    // ----------------------------------------------------
-    let uploadCancelled = false;
-
     if (btnCancelUpload) {
         btnCancelUpload.addEventListener('click', () => {
             uploadCancelled = true;
-            if (currentXhr) {
-                currentXhr.abort();
-                currentXhr = null;
-            }
+            activeXhrs.forEach(xhr => {
+                try { xhr.abort(); } catch (e) {}
+            });
+            activeXhrs.clear();
             isUploading = false;
             progressContainer.classList.add('hidden');
             cameraInput.value = '';
@@ -102,7 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ----------------------------------------------------
-    // Sequential Queue Upload with Realtime Progress & Cancel Support
+    // Queue Upload with Max 5 Concurrent Workers & Live Display
     // ----------------------------------------------------
     async function handleFilesUpload(fileList) {
         if (isUploading) return;
@@ -112,6 +116,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         isUploading = true;
         uploadCancelled = false;
+        activeXhrs.clear();
 
         const totalCount = files.length;
         let successCount = 0;
@@ -121,53 +126,69 @@ document.addEventListener('DOMContentLoaded', () => {
         progressContainer.classList.remove('hidden');
         progressBarFill.style.width = '0%';
         progressPercent.textContent = '0%';
-        progressStatusText.textContent = totalCount === 1 
-            ? 'Lade 1 Foto hoch...' 
-            : `Bereite Upload von ${totalCount} Fotos vor...`;
 
-        function uploadSingleFile(file, fileIndex) {
+        // Track byte ratio of each individual file (0.0 to 1.0)
+        const fileProgress = new Array(totalCount).fill(0);
+        const queue = files.map((file, index) => ({ file, index }));
+        let activeUploads = 0;
+        let completedCount = 0;
+
+        function updateUI() {
+            const waitingCount = queue.length;
+            if (queueActiveText) {
+                queueActiveText.textContent = `⚡ ${activeUploads} von max. ${MAX_CONCURRENT} Uploads aktiv`;
+            }
+            if (queueWaitingText) {
+                queueWaitingText.textContent = `${waitingCount} in Warteschlange`;
+            }
+            if (progressStatusText) {
+                if (totalCount === 1) {
+                    progressStatusText.textContent = 'Lade 1 Foto hoch...';
+                } else {
+                    progressStatusText.textContent = `Verarbeite ${completedCount + activeUploads} von ${totalCount} Fotos...`;
+                }
+            }
+
+            // Calculate total combined progress percentage
+            const totalRatio = fileProgress.reduce((sum, val) => sum + val, 0) / totalCount;
+            const overallPercent = Math.min(uploadCancelled ? 0 : 100, Math.round(totalRatio * 100));
+            progressBarFill.style.width = `${overallPercent}%`;
+            progressPercent.textContent = `${overallPercent}%`;
+        }
+
+        updateUI();
+
+        function uploadSingleFile(item) {
             return new Promise((resolve) => {
                 if (uploadCancelled) {
                     return resolve({ success: false, cancelled: true });
                 }
 
                 const formData = new FormData();
-                formData.append('photos', file);
+                formData.append('photos', item.file);
 
-                currentXhr = new XMLHttpRequest();
-                currentXhr.open('POST', '/api/upload', true);
+                const xhr = new XMLHttpRequest();
+                activeXhrs.add(xhr);
+                xhr.open('POST', '/api/upload', true);
 
                 // Upload progress event
-                currentXhr.upload.onprogress = (e) => {
+                xhr.upload.onprogress = (e) => {
                     if (e.lengthComputable && !uploadCancelled) {
-                        const fileRatio = e.loaded / e.total;
-                        const overallPercent = Math.min(99, Math.round(((fileIndex + fileRatio) / totalCount) * 100));
-                        progressBarFill.style.width = `${overallPercent}%`;
-                        progressPercent.textContent = `${overallPercent}%`;
-                        
-                        if (totalCount === 1) {
-                            progressStatusText.textContent = fileRatio >= 1 
-                                ? 'Verarbeite Bild...' 
-                                : `Lade Foto hoch (${Math.round(fileRatio * 100)}%)...`;
-                        } else {
-                            progressStatusText.textContent = fileRatio >= 1 
-                                ? `Sichere Foto ${fileIndex + 1} von ${totalCount}...` 
-                                : `Lade Foto ${fileIndex + 1} von ${totalCount} hoch (${Math.round(fileRatio * 100)}%)...`;
-                        }
+                        fileProgress[item.index] = e.loaded / e.total;
+                        updateUI();
                     }
                 };
 
-                currentXhr.onload = function () {
-                    const xhrRef = currentXhr;
-                    currentXhr = null;
-
+                xhr.onload = function () {
+                    activeXhrs.delete(xhr);
                     if (uploadCancelled) {
                         return resolve({ success: false, cancelled: true });
                     }
 
-                    if (xhrRef && xhrRef.status === 200) {
+                    if (xhr.status === 200) {
+                        fileProgress[item.index] = 1.0;
                         try {
-                            const res = JSON.parse(xhrRef.responseText);
+                            const res = JSON.parse(xhr.responseText);
                             if (res.success && res.uploaded && res.uploaded.length > 0) {
                                 return resolve({ success: true, count: res.uploaded.length });
                             } else {
@@ -176,58 +197,67 @@ document.addEventListener('DOMContentLoaded', () => {
                         } catch (err) {
                             return resolve({ success: false, error: 'Ungültige Serverantwort' });
                         }
-                    } else if (xhrRef && xhrRef.status === 413) {
-                        return resolve({ success: false, error: `${file.name}: Datei überschreitet das Limit (max. 100 MB).` });
+                    } else if (xhr.status === 413) {
+                        return resolve({ success: false, error: `${item.file.name}: Datei überschreitet das Limit (max. 100 MB).` });
                     } else {
-                        let errMsg = `Fehler (${xhrRef ? xhrRef.status : 'unbekannt'})`;
+                        let errMsg = `Fehler (${xhr.status})`;
                         try {
-                            const res = JSON.parse(xhrRef.responseText);
+                            const res = JSON.parse(xhr.responseText);
                             if (res.error) errMsg = res.error;
                         } catch (_) {}
-                        return resolve({ success: false, error: `${file.name}: ${errMsg}` });
+                        return resolve({ success: false, error: `${item.file.name}: ${errMsg}` });
                     }
                 };
 
-                currentXhr.onabort = function () {
-                    currentXhr = null;
+                xhr.onabort = function () {
+                    activeXhrs.delete(xhr);
                     resolve({ success: false, cancelled: true });
                 };
 
-                currentXhr.onerror = function () {
-                    currentXhr = null;
-                    if (uploadCancelled) {
-                        return resolve({ success: false, cancelled: true });
-                    }
-                    resolve({ success: false, error: `${file.name}: Netzwerkfehler` });
+                xhr.onerror = function () {
+                    activeXhrs.delete(xhr);
+                    if (uploadCancelled) return resolve({ success: false, cancelled: true });
+                    resolve({ success: false, error: `${item.file.name}: Netzwerkfehler` });
                 };
 
-                currentXhr.send(formData);
+                xhr.send(formData);
             });
         }
 
-        // Process queue sequentially
-        for (let i = 0; i < totalCount; i++) {
-            if (uploadCancelled) break;
+        async function worker() {
+            while (queue.length > 0 && !uploadCancelled) {
+                const item = queue.shift();
+                activeUploads++;
+                updateUI();
 
-            const res = await uploadSingleFile(files[i], i);
+                const res = await uploadSingleFile(item);
 
-            if (res.cancelled) break;
+                activeUploads--;
+                completedCount++;
+                updateUI();
 
-            if (res.success) {
-                successCount += (res.count || 1);
-                // Dynamically update view every 2 uploads or at the end
-                if ((i + 1) % 2 === 0 || i === totalCount - 1) {
-                    fetchStats();
-                    loadMyPhotos();
+                if (res.cancelled) break;
+
+                if (res.success) {
+                    successCount += (res.count || 1);
+                    if (completedCount % 3 === 0 || completedCount === totalCount) {
+                        fetchStats();
+                        loadMyPhotos();
+                    }
+                } else if (res.error) {
+                    errors.push(res.error);
                 }
-            } else if (res.error) {
-                errors.push(res.error);
             }
-
-            const stepPercent = Math.round(((i + 1) / totalCount) * 100);
-            progressBarFill.style.width = `${stepPercent}%`;
-            progressPercent.textContent = `${stepPercent}%`;
         }
+
+        // Spawn pool of up to MAX_CONCURRENT concurrent workers
+        const workerCount = Math.min(MAX_CONCURRENT, queue.length);
+        const workers = [];
+        for (let i = 0; i < workerCount; i++) {
+            workers.push(worker());
+        }
+
+        await Promise.all(workers);
 
         // Cleanup state
         isUploading = false;
@@ -273,6 +303,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     myUploadCountText.textContent = cnt === 1 
                         ? `Du hast bisher 1 eigenes Foto hochgeladen`
                         : `Du hast bisher ${cnt} eigene Fotos hochgeladen`;
+                }
+                if (activeUploadsLivePill && serverActiveCount) {
+                    const act = data.active_uploads || 0;
+                    serverActiveCount.textContent = act;
+                    if (act > 0) {
+                        activeUploadsLivePill.classList.remove('hidden');
+                    } else {
+                        activeUploadsLivePill.classList.add('hidden');
+                    }
                 }
             })
             .catch(err => console.error('Stats error:', err));

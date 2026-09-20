@@ -51,6 +51,15 @@
                         <span id="progress-status-text">Lade Fotos hoch...</span>
                         <span id="progress-percent">0%</span>
                     </div>
+
+                    <!-- Live Concurrency & Queue Indicator (Max 5 parallel) -->
+                    <div class="queue-status-bar" id="queue-status-bar">
+                        <span class="queue-indicator-dot"></span>
+                        <span id="queue-active-text">⚡ 0 von max. 5 Uploads aktiv</span>
+                        <span class="queue-divider">•</span>
+                        <span id="queue-waiting-text">0 in Warteschlange</span>
+                    </div>
+
                     <div class="progress-bar-bg">
                         <div class="progress-bar-fill" id="progress-bar-fill"></div>
                     </div>
@@ -71,6 +80,9 @@
                 <div class="subtle-stats-bar" id="stats-bar">
                     <span class="pulse-dot"></span>
                     <span id="total-photos-count">🍿 Lade Zähler...</span>
+                    <span class="active-uploads-pill hidden" id="active-uploads-live-pill">
+                        ⚡ <span id="server-active-count">0</span> aktiv
+                    </span>
                 </div>
 
                 <!-- DISCREET TOGGLE BUTTON FOR MY PHOTOS (At very end of page, hidden by default) -->
