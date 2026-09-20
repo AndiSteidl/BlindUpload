@@ -300,67 +300,71 @@ def upload_chunk():
     safe_file_id = ''.join(c for c in file_id if c.isalnum() or c in ('_', '-'))
     part_path = os.path.join(CHUNKS_DIR, f"{safe_file_id}.part")
     
+    global active_uploads_count
+    with active_uploads_lock:
+        active_uploads_count += 1
+
     try:
         # Append incoming chunk bytes to the partial file
         with open(part_path, 'ab') as f:
             chunk_file.save(f)
-    except Exception as err:
-        app.logger.error(f"Error saving chunk {chunk_index} for {file_id}: {err}")
-        return jsonify({'error': f'Fehler beim Speichern des Chunks: {str(err)}'}), 500
 
-    # If more chunks are pending, acknowledge receipt
-    if chunk_index < total_chunks - 1:
-        return jsonify({
-            'status': 'chunk_received',
-            'chunk_index': chunk_index,
-            'total_chunks': total_chunks
-        })
+        # If more chunks are pending, acknowledge receipt
+        if chunk_index < total_chunks - 1:
+            return jsonify({
+                'status': 'chunk_received',
+                'chunk_index': chunk_index,
+                'total_chunks': total_chunks
+            })
 
-    # All chunks received! Finalize assembly and process file
-    try:
-        ext = original_filename.rsplit('.', 1)[1].lower()
-        photo_id = str(uuid.uuid4())
-        out_filename = f"{photo_id}.{ext}"
-        thumb_filename = f"thumb_{photo_id}.jpg"
-        
-        out_path = os.path.join(UPLOADS_DIR, out_filename)
-        thumb_path = os.path.join(THUMBNAILS_DIR, thumb_filename)
-        
-        # Move fully assembled file into UPLOADS_DIR
-        shutil.move(part_path, out_path)
-        file_size = os.path.getsize(out_path)
-        
-        # Insert metadata into SQLite
-        with get_db() as conn:
-            conn.execute('''
-                INSERT INTO photos (id, filename, original_filename, thumbnail, session_id, file_size, width, height)
-                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
-            ''', (photo_id, out_filename, original_filename, thumb_filename, user_id, file_size))
-            conn.commit()
+        # All chunks received! Finalize assembly and process file with concurrency limiter
+        with UPLOAD_SEMAPHORE:
+            ext = original_filename.rsplit('.', 1)[1].lower()
+            photo_id = str(uuid.uuid4())
+            out_filename = f"{photo_id}.{ext}"
+            thumb_filename = f"thumb_{photo_id}.jpg"
             
-        # Offload thumbnail creation to background worker
-        executor.submit(generate_thumbnail_task, out_path, thumb_path, photo_id)
-        
-        return jsonify({
-            'success': True,
-            'uploaded': [{
-                'id': photo_id,
-                'filename': out_filename,
-                'original_filename': original_filename,
-                'thumbnail': thumb_filename,
-                'uploaded_at': datetime.now().strftime('%H:%M:%S'),
-                'file_size': file_size
-            }],
-            'errors': []
-        })
+            out_path = os.path.join(UPLOADS_DIR, out_filename)
+            thumb_path = os.path.join(THUMBNAILS_DIR, thumb_filename)
+            
+            # Move fully assembled file into UPLOADS_DIR
+            shutil.move(part_path, out_path)
+            file_size = os.path.getsize(out_path)
+            
+            # Insert metadata into SQLite
+            with get_db() as conn:
+                conn.execute('''
+                    INSERT INTO photos (id, filename, original_filename, thumbnail, session_id, file_size, width, height)
+                    VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                ''', (photo_id, out_filename, original_filename, thumb_filename, user_id, file_size))
+                conn.commit()
+                
+            # Offload thumbnail creation to background worker
+            executor.submit(generate_thumbnail_task, out_path, thumb_path, photo_id)
+            
+            return jsonify({
+                'success': True,
+                'uploaded': [{
+                    'id': photo_id,
+                    'filename': out_filename,
+                    'original_filename': original_filename,
+                    'thumbnail': thumb_filename,
+                    'uploaded_at': datetime.now().strftime('%H:%M:%S'),
+                    'file_size': file_size
+                }],
+                'errors': []
+            })
     except Exception as err:
-        app.logger.error(f"Error finalizing chunked upload for {original_filename}: {err}")
-        if os.path.exists(part_path):
+        app.logger.error(f"Error in chunked upload for {original_filename}: {err}")
+        if os.path.exists(part_path) and chunk_index == total_chunks - 1:
             try:
                 os.remove(part_path)
             except Exception:
                 pass
-        return jsonify({'error': f'Fehler beim Zusammenfügen der Datei: {str(err)}'}), 500
+        return jsonify({'error': f'Fehler bei der Chunk-Verarbeitung: {str(err)}'}), 500
+    finally:
+        with active_uploads_lock:
+            active_uploads_count = max(0, active_uploads_count - 1)
 
 @app.route('/api/my-uploads', methods=['GET'])
 def my_uploads():

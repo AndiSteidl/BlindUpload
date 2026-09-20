@@ -6,6 +6,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const progressBarFill = document.getElementById('progress-bar-fill');
     const progressPercent = document.getElementById('progress-percent');
     const progressStatusText = document.getElementById('progress-status-text');
+    const progressBytesText = document.getElementById('progress-bytes-text');
+    const activeFilePill = document.getElementById('active-file-pill');
+    const activeFileIcon = document.getElementById('active-file-icon');
+    const activeFileName = document.getElementById('active-file-name');
+    const activeFileSpeed = document.getElementById('active-file-speed');
     const btnCancelUpload = document.getElementById('btn-cancel-upload');
     const myUploadCountText = document.getElementById('my-upload-count-text');
     const totalPhotosCount = document.getElementById('total-photos-count');
@@ -29,6 +34,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!url) return false;
         const ext = url.split('?')[0].split('.').pop().toLowerCase();
         return ['mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv'].includes(ext);
+    }
+
+    function formatBytes(bytes, decimals = 1) {
+        if (!bytes || bytes <= 0) return '0 B';
+        const k = 1024;
+        const dm = decimals < 0 ? 0 : decimals;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
     }
 
     // Concurrency & State Variables (Max 5 parallel uploads)
@@ -71,7 +85,8 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             activeXhrs.clear();
             isUploading = false;
-            progressContainer.classList.add('hidden');
+            if (progressContainer) progressContainer.classList.add('hidden');
+            if (dropzone) dropzone.classList.remove('hidden');
             cameraInput.value = '';
             showToast('❌ Upload wurde abgebrochen.', 'info', 3000);
         });
@@ -125,20 +140,56 @@ document.addEventListener('DOMContentLoaded', () => {
         uploadCancelled = false;
         activeXhrs.clear();
 
+        // 1. IMMEDIATELY HIDE DROPZONE & BUTTON
+        // Visual confirmation that the selection was accepted: the button vanishes instantly
+        if (dropzone) dropzone.classList.add('hidden');
+        if (progressContainer) progressContainer.classList.remove('hidden');
+
+        // Scroll to progress card smoothly on mobile
+        if (progressContainer) {
+            progressContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
         const totalCount = files.length;
         let successCount = 0;
         const errors = [];
 
-        // Show progress UI
-        progressContainer.classList.remove('hidden');
-        progressBarFill.style.width = '0%';
-        progressPercent.textContent = '0%';
+        // Distinguish videos and photos
+        const videoCount = files.filter(f => isVideoUrl(f.name)).length;
+        const photoCount = totalCount - videoCount;
+        const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
 
-        // Track byte ratio of each individual file (0.0 to 1.0)
-        const fileProgress = new Array(totalCount).fill(0);
+        let summaryType = '';
+        if (videoCount > 0 && photoCount > 0) {
+            summaryType = `${videoCount} Video${videoCount > 1 ? 's' : ''} & ${photoCount} Foto${photoCount > 1 ? 's' : ''}`;
+        } else if (videoCount > 0) {
+            summaryType = `${videoCount} Video${videoCount > 1 ? 's' : ''}`;
+        } else {
+            summaryType = `${photoCount} Foto${photoCount > 1 ? 's' : ''}`;
+        }
+
+        if (progressStatusText) {
+            progressStatusText.textContent = `Lade ${summaryType} hoch...`;
+        }
+        if (progressBytesText) {
+            progressBytesText.textContent = `0 B von ${formatBytes(totalBytes)}`;
+        }
+        if (progressBarFill) progressBarFill.style.width = '0%';
+        if (progressPercent) progressPercent.textContent = '0%';
+
+        if (activeFileName) activeFileName.textContent = files[0].name;
+        if (activeFileIcon) activeFileIcon.textContent = isVideoUrl(files[0].name) ? '🎥' : '📸';
+        if (activeFileSpeed) activeFileSpeed.textContent = '• Verbindung aufbauen...';
+
+        // Track byte upload for each individual file (in exact bytes!)
+        const fileBytesUploaded = new Array(totalCount).fill(0);
         const queue = files.map((file, index) => ({ file, index }));
         let activeUploads = 0;
         let completedCount = 0;
+        const uploadStartTime = Date.now();
+
+        // Map to track active file state: index -> { name, isVideo, chunkInfo, status }
+        const activeFilesMap = new Map();
 
         function updateUI() {
             const waitingCount = queue.length;
@@ -148,19 +199,64 @@ document.addEventListener('DOMContentLoaded', () => {
             if (queueWaitingText) {
                 queueWaitingText.textContent = `${waitingCount} in Warteschlange`;
             }
+
+            // Calculate total uploaded bytes across all files
+            const totalUploaded = fileBytesUploaded.reduce((sum, b) => sum + b, 0);
+            const percent = totalBytes > 0 
+                ? Math.min(uploadCancelled ? 0 : 100, Math.round((totalUploaded / totalBytes) * 100))
+                : 0;
+
+            if (progressBarFill) progressBarFill.style.width = `${percent}%`;
+            if (progressPercent) progressPercent.textContent = `${percent}%`;
+
+            if (progressBytesText) {
+                progressBytesText.textContent = `${formatBytes(totalUploaded)} von ${formatBytes(totalBytes)}`;
+            }
+
+            // Title
             if (progressStatusText) {
-                if (totalCount === 1) {
-                    progressStatusText.textContent = 'Lade 1 Foto hoch...';
+                if (totalUploaded >= totalBytes && activeUploads > 0) {
+                    progressStatusText.textContent = `⚙️ Finalisiere auf dem Server...`;
+                } else if (totalCount === 1) {
+                    progressStatusText.textContent = `Lade ${summaryType} hoch...`;
                 } else {
-                    progressStatusText.textContent = `Verarbeite ${completedCount + activeUploads} von ${totalCount} Fotos...`;
+                    progressStatusText.textContent = `Verarbeite ${completedCount + activeUploads} von ${totalCount} (${summaryType})...`;
                 }
             }
 
-            // Calculate total combined progress percentage
-            const totalRatio = fileProgress.reduce((sum, val) => sum + val, 0) / totalCount;
-            const overallPercent = Math.min(uploadCancelled ? 0 : 100, Math.round(totalRatio * 100));
-            progressBarFill.style.width = `${overallPercent}%`;
-            progressPercent.textContent = `${overallPercent}%`;
+            // Active file info
+            if (activeFilePill) {
+                if (activeFilesMap.size > 0) {
+                    const firstActive = Array.from(activeFilesMap.values())[0];
+                    if (activeFileIcon) {
+                        activeFileIcon.textContent = firstActive.status === 'assembling' ? '⚙️' : (firstActive.isVideo ? '🎥' : '📸');
+                    }
+                    if (activeFileName) {
+                        const suffix = firstActive.status === 'assembling' 
+                            ? ' (Wird verarbeitet...)' 
+                            : (firstActive.chunkInfo ? ` (${firstActive.chunkInfo})` : '');
+                        activeFileName.textContent = `${firstActive.name}${suffix}`;
+                    }
+
+                    const elapsedSec = (Date.now() - uploadStartTime) / 1000;
+                    if (elapsedSec > 0.8 && totalUploaded > 0 && activeFileSpeed) {
+                        const bytesPerSec = totalUploaded / elapsedSec;
+                        const remainingBytes = Math.max(0, totalBytes - totalUploaded);
+                        const remainingSec = Math.round(remainingBytes / bytesPerSec);
+                        let eta = '';
+                        if (remainingSec > 60) {
+                            eta = `noch ca. ${Math.ceil(remainingSec / 60)} Min.`;
+                        } else if (remainingSec > 0) {
+                            eta = `noch ca. ${remainingSec}s`;
+                        }
+                        activeFileSpeed.textContent = `• ~ ${formatBytes(bytesPerSec)}/s ${eta ? '• ' + eta : ''}`;
+                    }
+                } else if (completedCount === totalCount) {
+                    if (activeFileIcon) activeFileIcon.textContent = '✅';
+                    if (activeFileName) activeFileName.textContent = 'Alle Dateien übertragen!';
+                    if (activeFileSpeed) activeFileSpeed.textContent = '';
+                }
+            }
         }
 
         updateUI();
@@ -175,8 +271,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 const totalChunks = Math.ceil(item.file.size / CHUNK_SIZE);
                 const fileId = 'chk_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
 
+                activeFilesMap.set(item.index, {
+                    name: item.file.name,
+                    isVideo: true,
+                    chunkInfo: `Teil 1/${totalChunks}`,
+                    status: 'uploading'
+                });
+                updateUI();
+
                 for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
                     if (uploadCancelled) {
+                        activeFilesMap.delete(item.index);
                         return resolve({ success: false, cancelled: true });
                     }
 
@@ -184,12 +289,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     const end = Math.min(item.file.size, start + CHUNK_SIZE);
                     const chunkBlob = item.file.slice(start, end);
 
+                    activeFilesMap.set(item.index, {
+                        name: item.file.name,
+                        isVideo: true,
+                        chunkInfo: `Teil ${chunkIndex + 1}/${totalChunks}`,
+                        status: 'uploading'
+                    });
+                    updateUI();
+
                     // Retry up to 3 times per chunk on transient network failure
                     let chunkSuccess = false;
                     let lastError = null;
 
                     for (let attempt = 0; attempt < 3; attempt++) {
                         if (uploadCancelled) {
+                            activeFilesMap.delete(item.index);
                             return resolve({ success: false, cancelled: true });
                         }
 
@@ -207,11 +321,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
                             xhr.upload.onprogress = (e) => {
                                 if (e.lengthComputable && !uploadCancelled) {
-                                    const bytesUploaded = start + e.loaded;
-                                    fileProgress[item.index] = bytesUploaded / item.file.size;
+                                    fileBytesUploaded[item.index] = start + e.loaded;
                                     updateUI();
                                 }
                             };
+
+                            // When the final chunk bytes are uploaded, show assembly state while server processes
+                            if (chunkIndex === totalChunks - 1) {
+                                xhr.upload.onload = () => {
+                                    fileBytesUploaded[item.index] = item.file.size;
+                                    activeFilesMap.set(item.index, {
+                                        name: item.file.name,
+                                        isVideo: true,
+                                        chunkInfo: 'Finalisiere auf Server...',
+                                        status: 'assembling'
+                                    });
+                                    updateUI();
+                                };
+                            }
 
                             xhr.onload = function () {
                                 activeXhrs.delete(xhr);
@@ -249,14 +376,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         });
 
                         if (chunkRes.cancelled) {
+                            activeFilesMap.delete(item.index);
                             return resolve({ success: false, cancelled: true });
                         }
 
                         if (chunkRes.success) {
                             chunkSuccess = true;
-                            // If this was the final chunk, check for final server completion
                             if (chunkIndex === totalChunks - 1) {
-                                fileProgress[item.index] = 1.0;
+                                fileBytesUploaded[item.index] = item.file.size;
+                                activeFilesMap.delete(item.index);
                                 updateUI();
                                 if (chunkRes.data && chunkRes.data.success) {
                                     return resolve({ success: true, count: 1 });
@@ -264,16 +392,16 @@ document.addEventListener('DOMContentLoaded', () => {
                                     return resolve({ success: false, error: chunkRes.data?.error || 'Upload fehlgeschlagen' });
                                 }
                             }
-                            break; // Proceed to next chunk
+                            break;
                         } else {
                             lastError = chunkRes.error;
-                            // Wait 1 second before retry
                             await new Promise(r => setTimeout(r, 1000));
                         }
                     }
 
                     if (!chunkSuccess) {
-                        return resolve({ success: false, error: `${item.file.name}: Chunk ${chunkIndex + 1}/${totalChunks} fehlgeschlagen (${lastError})` });
+                        activeFilesMap.delete(item.index);
+                        return resolve({ success: false, error: `${item.file.name}: Teil ${chunkIndex + 1}/${totalChunks} fehlgeschlagen (${lastError})` });
                     }
                 }
             });
@@ -291,6 +419,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     return resolve({ success: false, cancelled: true });
                 }
 
+                activeFilesMap.set(item.index, {
+                    name: item.file.name,
+                    isVideo: isVideoUrl(item.file.name),
+                    chunkInfo: '',
+                    status: 'uploading'
+                });
+                updateUI();
+
                 const formData = new FormData();
                 formData.append('photos', item.file);
 
@@ -301,19 +437,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Upload progress event
                 xhr.upload.onprogress = (e) => {
                     if (e.lengthComputable && !uploadCancelled) {
-                        fileProgress[item.index] = e.loaded / e.total;
+                        fileBytesUploaded[item.index] = e.loaded;
                         updateUI();
                     }
                 };
 
                 xhr.onload = function () {
                     activeXhrs.delete(xhr);
+                    activeFilesMap.delete(item.index);
+
                     if (uploadCancelled) {
                         return resolve({ success: false, cancelled: true });
                     }
 
                     if (xhr.status === 200) {
-                        fileProgress[item.index] = 1.0;
+                        fileBytesUploaded[item.index] = item.file.size;
+                        updateUI();
                         try {
                             const res = JSON.parse(xhr.responseText);
                             if (res.success && res.uploaded && res.uploaded.length > 0) {
@@ -338,11 +477,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 xhr.onabort = function () {
                     activeXhrs.delete(xhr);
+                    activeFilesMap.delete(item.index);
                     resolve({ success: false, cancelled: true });
                 };
 
                 xhr.onerror = function () {
                     activeXhrs.delete(xhr);
+                    activeFilesMap.delete(item.index);
                     if (uploadCancelled) return resolve({ success: false, cancelled: true });
                     resolve({ success: false, error: `${item.file.name}: Netzwerkfehler` });
                 };
@@ -386,12 +527,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         await Promise.all(workers);
 
-        // Cleanup state
-        isUploading = false;
-        progressContainer.classList.add('hidden');
-        cameraInput.value = '';
-
         if (uploadCancelled) {
+            isUploading = false;
+            if (progressContainer) progressContainer.classList.add('hidden');
+            if (dropzone) dropzone.classList.remove('hidden');
+            cameraInput.value = '';
             if (successCount > 0) {
                 showToast(`Abgebrochen: ${successCount} Foto(s) wurden bereits gespeichert.`, 'info', 4000);
             }
@@ -400,16 +540,32 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        fetchStats();
-        loadMyPhotos();
+        // Show 100% completion in progress card briefly
+        if (progressBarFill) progressBarFill.style.width = '100%';
+        if (progressPercent) progressPercent.textContent = '100%';
+        if (progressStatusText) progressStatusText.textContent = '✅ Alle Dateien erfolgreich übertragen!';
+        if (activeFileName) activeFileName.textContent = 'Erfolgreich auf dem Server gespeichert!';
+        if (activeFileIcon) activeFileIcon.textContent = '🎉';
+        if (activeFileSpeed) activeFileSpeed.textContent = '';
 
-        if (successCount > 0 && errors.length === 0) {
-            showToast(`🎉 Super! ${successCount} Foto(s) erfolgreich hochgeladen!`, 'success', 4500);
-        } else if (successCount > 0 && errors.length > 0) {
-            showToast(`⚠️ ${successCount} von ${totalCount} Fotos hochgeladen. Fehler bei: ${errors.join(', ')}`, 'warning', 6000);
-        } else if (errors.length > 0) {
-            showToast(`Upload fehlgeschlagen: ${errors[0]}`, 'error', 5000);
-        }
+        setTimeout(() => {
+            isUploading = false;
+            if (progressContainer) progressContainer.classList.add('hidden');
+            if (dropzone) dropzone.classList.remove('hidden');
+            cameraInput.value = '';
+
+            fetchStats();
+            loadMyPhotos();
+
+            if (successCount > 0 && errors.length === 0) {
+                const label = successCount === 1 ? '1 Datei' : `${successCount} Dateien`;
+                showToast(`🎉 Super! ${label} erfolgreich hochgeladen!`, 'success', 4500);
+            } else if (successCount > 0 && errors.length > 0) {
+                showToast(`⚠️ ${successCount} von ${totalCount} hochgeladen. Fehler bei: ${errors.join(', ')}`, 'warning', 6000);
+            } else if (errors.length > 0) {
+                showToast(`Upload fehlgeschlagen: ${errors[0]}`, 'error', 5000);
+            }
+        }, 1200);
     }
 
     // ----------------------------------------------------

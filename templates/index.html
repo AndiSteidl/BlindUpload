@@ -43,13 +43,36 @@
 
                     <p class="upload-hint">Tippe auf den Button oder ziehe Dateien hierhin</p>
                     <p class="privacy-note">🔒 <strong>Blind Upload:</strong> Deine Medien sind für andere Gäste unsichtbar.</p>
+                    
+                    <!-- Helpful Tip for iPhone iCloud Video Downloads -->
+                    <div class="ios-icloud-hint">
+                        <span class="ios-hint-icon">💡</span>
+                        <div class="ios-hint-text">
+                            <strong>iPhone-Hinweis bei Videos:</strong> Liegt ein Video in der iCloud, lädt iOS es erst lokal herunter (erkennbar am dezenten Ladekreis ◐ im Vorschaubild). Der blaue Haken <span class="ios-badge-check">✓</span> schließt sich automatisch, sobald das Video geladen ist!
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Realtime Upload Progress Bar & Cancel Button -->
                 <div class="upload-progress-container hidden" id="progress-container">
-                    <div class="progress-info">
-                        <span id="progress-status-text">Lade Fotos hoch...</span>
-                        <span id="progress-percent">0%</span>
+                    <div class="progress-header-box">
+                        <div class="spinner-mini"></div>
+                        <div class="progress-title-wrap">
+                            <span class="progress-title" id="progress-status-text">Upload wird vorbereitet...</span>
+                            <span class="progress-detail-sub" id="progress-bytes-text">0 MB von 0 MB</span>
+                        </div>
+                        <span class="progress-percent-badge" id="progress-percent">0%</span>
+                    </div>
+
+                    <!-- Active file name & Chunk / Speed info -->
+                    <div class="active-file-pill" id="active-file-pill">
+                        <span class="active-file-icon" id="active-file-icon">⏳</span>
+                        <span class="active-file-name" id="active-file-name">Warte auf Verbindung...</span>
+                        <span class="active-file-speed" id="active-file-speed"></span>
+                    </div>
+
+                    <div class="progress-bar-bg">
+                        <div class="progress-bar-fill" id="progress-bar-fill"></div>
                     </div>
 
                     <!-- Live Concurrency & Queue Indicator (Max 5 parallel) -->
@@ -60,9 +83,6 @@
                         <span id="queue-waiting-text">0 in Warteschlange</span>
                     </div>
 
-                    <div class="progress-bar-bg">
-                        <div class="progress-bar-fill" id="progress-bar-fill"></div>
-                    </div>
                     <button type="button" class="btn-cancel-upload" id="btn-cancel-upload">
                         ❌ Upload abbrechen
                     </button>
