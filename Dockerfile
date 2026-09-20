@@ -24,8 +24,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create initial data directories
-RUN mkdir -p /app/data /app/data/uploads /app/data/thumbnails
+RUN mkdir -p /app/data /app/data/uploads /app/data/thumbnails /app/data/previews /app/data/chunks
 
 EXPOSE 5000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--threads", "2", "--timeout", "300", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "3", "--threads", "4", "--timeout", "300", "app:app"]

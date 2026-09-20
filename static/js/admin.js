@@ -24,6 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
         originalFilename: card.getAttribute('data-original-filename'),
         uploadedAt: card.getAttribute('data-uploaded-at'),
         fullUrl: card.getAttribute('data-full-url'),
+        rawUrl: card.getAttribute('data-raw-url') || card.getAttribute('data-full-url'),
         element: card
     }));
 
@@ -33,13 +34,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (index < 0 || index >= photoData.length) return;
         currentIndex = index;
         const item = photoData[currentIndex];
-        const isVid = isVideoUrl(item.fullUrl);
+        const isVid = isVideoUrl(item.fullUrl) || isVideoUrl(item.rawUrl);
 
         if (isVid) {
             if (lightboxImg) lightboxImg.classList.add('hidden');
             if (lightboxVideo) {
                 lightboxVideo.classList.remove('hidden');
-                lightboxVideo.src = item.fullUrl;
+                lightboxVideo.src = item.rawUrl || item.fullUrl;
                 lightboxVideo.play().catch(() => {});
             }
         } else {
@@ -58,7 +59,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (lightboxMeta) lightboxMeta.textContent = `Hochgeladen: ${item.uploadedAt || ''}`;
         if (lightboxOpenBtn) lightboxOpenBtn.href = item.fullUrl;
         if (lightboxDownloadBtn) {
-            lightboxDownloadBtn.href = `${item.fullUrl}?download=1`;
+            const raw = item.rawUrl || item.fullUrl;
+            lightboxDownloadBtn.href = `${raw}?download=1`;
             lightboxDownloadBtn.setAttribute('download', item.originalFilename || (isVid ? 'video' : 'foto'));
         }
 

@@ -38,7 +38,7 @@
                             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
                             Kamera / Fotos & Videos
                         </label>
-                        <input type="file" id="camera-input" accept="image/*,video/*" multiple style="display: none;">
+                        <input type="file" id="camera-input" accept="image/*,video/*,.heic,.heif,.HEIC,.HEIF" multiple style="display: none;">
                     </div>
 
                     <p class="upload-hint">Tippe auf den Button oder ziehe Dateien hierhin</p>
@@ -75,12 +75,12 @@
                         <div class="progress-bar-fill" id="progress-bar-fill"></div>
                     </div>
 
-                    <!-- Live Concurrency & Queue Indicator (Max 5 parallel) -->
+                    <!-- Live Concurrency & Queue Indicator (Smart Queue for large batches) -->
                     <div class="queue-status-bar" id="queue-status-bar">
                         <span class="queue-indicator-dot"></span>
-                        <span id="queue-active-text">⚡ 0 von max. 5 Uploads aktiv</span>
+                        <span id="queue-active-text">⚡ Warteschlange aktiv</span>
                         <span class="queue-divider">•</span>
-                        <span id="queue-waiting-text">0 in Warteschlange</span>
+                        <span id="queue-waiting-text">Große Mengen werden automatisch aufgeteilt</span>
                     </div>
 
                     <button type="button" class="btn-cancel-upload" id="btn-cancel-upload">

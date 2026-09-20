@@ -45,8 +45,8 @@ document.addEventListener('DOMContentLoaded', () => {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
     }
 
-    // Concurrency & State Variables (Max 5 parallel uploads)
-    const MAX_CONCURRENT = 5;
+    // Concurrency & State Variables (Max 3 parallel uploads for optimal stability & mobile uplink)
+    const MAX_CONCURRENT = 3;
     let isUploading = false;
     let uploadCancelled = false;
     const activeXhrs = new Set();
@@ -193,11 +193,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         function updateUI() {
             const waitingCount = queue.length;
+            const maxAllowed = Math.min(MAX_CONCURRENT, totalCount);
             if (queueActiveText) {
-                queueActiveText.textContent = `⚡ ${activeUploads} von max. ${MAX_CONCURRENT} Uploads aktiv`;
+                queueActiveText.textContent = `⚡ ${activeUploads} von max. ${maxAllowed} Uploads aktiv`;
             }
             if (queueWaitingText) {
-                queueWaitingText.textContent = `${waitingCount} in Warteschlange`;
+                queueWaitingText.textContent = `${waitingCount} in Warteschlange • ${completedCount} von ${totalCount} fertig`;
             }
 
             // Calculate total uploaded bytes across all files
@@ -407,7 +408,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        function uploadSingleFile(item) {
+        function uploadSingleFileCore(item) {
             // Automatically switch to chunked upload for files > 20 MB to bypass Cloudflare 100 MB limit
             const CHUNK_THRESHOLD = 20 * 1024 * 1024;
             if (item.file.size > CHUNK_THRESHOLD) {
@@ -464,14 +465,14 @@ document.addEventListener('DOMContentLoaded', () => {
                             return resolve({ success: false, error: 'Ungültige Serverantwort' });
                         }
                     } else if (xhr.status === 413) {
-                        return resolve({ success: false, error: `${item.file.name}: Datei überschreitet das Limit (max. 100 MB).` });
+                        return resolve({ success: false, error: `${item.file.name}: Datei überschreitet das Limit (max. 100 MB).`, permanent: true });
                     } else {
                         let errMsg = `Fehler (${xhr.status})`;
                         try {
                             const res = JSON.parse(xhr.responseText);
                             if (res.error) errMsg = res.error;
                         } catch (_) {}
-                        return resolve({ success: false, error: `${item.file.name}: ${errMsg}` });
+                        return resolve({ success: false, error: `${item.file.name}: ${errMsg}`, status: xhr.status });
                     }
                 };
 
@@ -492,6 +493,32 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
+        async function uploadSingleFile(item) {
+            const maxRetries = 2;
+            let lastRes = null;
+
+            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                if (uploadCancelled) return { success: false, cancelled: true };
+
+                if (attempt > 0) {
+                    activeFilesMap.set(item.index, {
+                        name: item.file.name,
+                        isVideo: isVideoUrl(item.file.name),
+                        chunkInfo: `Wiederhole Versuch ${attempt}/${maxRetries}...`,
+                        status: 'uploading'
+                    });
+                    updateUI();
+                    await new Promise(r => setTimeout(r, 1200 * attempt));
+                }
+
+                lastRes = await uploadSingleFileCore(item);
+                if (lastRes.cancelled || lastRes.success || lastRes.permanent) {
+                    return lastRes;
+                }
+            }
+            return lastRes || { success: false, error: `${item.file.name}: Upload nach mehreren Versuchen fehlgeschlagen` };
+        }
+
         async function worker() {
             while (queue.length > 0 && !uploadCancelled) {
                 const item = queue.shift();
@@ -508,12 +535,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (res.success) {
                     successCount += (res.count || 1);
-                    if (completedCount % 3 === 0 || completedCount === totalCount) {
-                        fetchStats();
-                        loadMyPhotos();
-                    }
                 } else if (res.error) {
                     errors.push(res.error);
+                }
+
+                // Update counts every 5 completed files WITHOUT re-rendering full gallery DOM
+                if (completedCount % 5 === 0 || completedCount === totalCount) {
+                    fetchStats();
                 }
             }
         }
@@ -639,8 +667,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     const isVid = isVideoUrl(photo.filename);
                     const videoBadgeHtml = isVid ? '<span class="video-badge">🎬 Video</span>' : '';
                     const videoClass = isVid ? 'gallery-card is-video' : 'gallery-card';
+                    const fullUrl = isVid ? `/uploads/${photo.filename}` : (photo.preview_url || `/preview/${photo.filename}`);
                     return `
-                        <div class="${videoClass}" data-id="${photo.id}" data-full="/uploads/${photo.filename}" data-is-video="${isVid}">
+                        <div class="${videoClass}" data-id="${photo.id}" data-full="${fullUrl}" data-is-video="${isVid}">
                             <img src="/thumbnails/${photo.thumbnail}" alt="${photo.original_filename}" loading="lazy">
                             ${videoBadgeHtml}
                             <button class="delete-btn" data-id="${photo.id}" title="Dieses Element löschen">

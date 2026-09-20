@@ -55,21 +55,25 @@
                     {% for photo in photos %}
                         {% set ext = photo.filename.rsplit('.', 1)[-1].lower() %}
                         {% set is_vid = ext in ['mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv'] %}
+                        {% set is_heic = ext in ['heic', 'heif'] %}
                         <div class="gallery-card {% if is_vid %}is-video{% endif %}" 
                              data-id="{{ photo.id }}"
                              data-original-filename="{{ photo.original_filename }}"
                              data-uploaded-at="{{ photo.uploaded_at }}"
-                             data-full-url="{{ url_for('serve_upload', filename=photo.filename) }}"
+                             data-full-url="{{ url_for('serve_upload', filename=photo.filename) if is_vid else url_for('serve_preview', filename=photo.filename) }}"
+                             data-raw-url="{{ url_for('serve_upload', filename=photo.filename) }}"
                              data-is-video="{{ 'true' if is_vid else 'false' }}">
                             <img src="{{ url_for('serve_thumbnail', filename=photo.thumbnail) }}" alt="{{ photo.original_filename }}" loading="lazy">
                             {% if is_vid %}
                                 <span class="video-badge">🎬 Video</span>
+                            {% elif is_heic %}
+                                <span class="video-badge" style="background: rgba(14, 165, 233, 0.85); color: #fff;">📸 HEIC</span>
                             {% endif %}
                             <div class="gallery-card-info">
                                 <span class="photo-filename" title="{{ photo.original_filename }}">{{ photo.original_filename }}</span>
                                 <span class="photo-date">{{ photo.uploaded_at }}</span>
                             </div>
-                            <a href="{{ url_for('serve_upload', filename=photo.filename) }}" target="_blank" class="gallery-card-link" title="Original anzeigen" onclick="event.stopPropagation();">
+                            <a href="{{ url_for('serve_upload', filename=photo.filename) if is_vid else url_for('serve_preview', filename=photo.filename) }}" target="_blank" class="gallery-card-link" title="Im neuen Tab ansehen" onclick="event.stopPropagation();">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                             </a>
                         </div>

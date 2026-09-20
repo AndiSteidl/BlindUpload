@@ -31,8 +31,8 @@ ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'Gabi50!')
 # Thread pool for asynchronous background tasks (thumbnail generation)
 executor = ThreadPoolExecutor(max_workers=3)
 
-# Server-side upload concurrency limiter (max 5 simultaneous upload processes)
-UPLOAD_SEMAPHORE = threading.Semaphore(5)
+# Server-side upload concurrency limiter (allows smooth parallel streams)
+UPLOAD_SEMAPHORE = threading.Semaphore(8)
 active_uploads_lock = threading.Lock()
 active_uploads_count = 0
 
@@ -40,10 +40,11 @@ active_uploads_count = 0
 DATA_DIR = os.environ.get('DATA_DIR', os.path.join(os.path.abspath(os.path.dirname(__file__)), 'data'))
 UPLOADS_DIR = os.path.join(DATA_DIR, 'uploads')
 THUMBNAILS_DIR = os.path.join(DATA_DIR, 'thumbnails')
+PREVIEWS_DIR = os.path.join(DATA_DIR, 'previews')
 CHUNKS_DIR = os.path.join(DATA_DIR, 'chunks')
 DB_PATH = os.path.join(DATA_DIR, 'photos.db')
 
-for folder in [DATA_DIR, UPLOADS_DIR, THUMBNAILS_DIR, CHUNKS_DIR]:
+for folder in [DATA_DIR, UPLOADS_DIR, THUMBNAILS_DIR, PREVIEWS_DIR, CHUNKS_DIR]:
     os.makedirs(folder, exist_ok=True)
 
 # Database helper with WAL mode and busy timeout
@@ -76,6 +77,7 @@ init_db()
 
 IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif', 'dng'}
 VIDEO_EXTENSIONS = {'mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv'}
+NON_WEB_IMAGE_EXTENSIONS = {'heic', 'heif', 'dng'}
 ALLOWED_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 def allowed_file(filename):
@@ -83,6 +85,58 @@ def allowed_file(filename):
 
 def is_video_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in VIDEO_EXTENSIONS
+
+def is_non_web_image(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in NON_WEB_IMAGE_EXTENSIONS
+
+def get_preview_filename(photo_filename):
+    """Returns the preview JPEG filename for a given stored filename."""
+    base = photo_filename.rsplit('.', 1)[0]
+    return f"preview_{base}.jpg"
+
+def generate_image_preview(original_path, preview_path):
+    """Generates high-resolution web-friendly JPEG preview (max 2560px, quality 90)."""
+    try:
+        with Image.open(original_path) as img:
+            try:
+                img = ImageOps.exif_transpose(img)
+            except Exception:
+                pass
+            
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+                
+            img.thumbnail((2560, 2560), Image.Resampling.LANCZOS)
+            os.makedirs(os.path.dirname(preview_path), exist_ok=True)
+            img.save(preview_path, 'JPEG', quality=90, optimize=True)
+            return True
+    except Exception as err:
+        app.logger.error(f"Error generating preview for {original_path}: {err}")
+        return False
+
+def ensure_preview(photo_filename):
+    """
+    Ensures a browser-viewable file exists.
+    For standard web formats, returns the original path in UPLOADS_DIR.
+    For HEIC/HEIF/DNG, returns the path to preview_{id}.jpg, generating it if needed.
+    """
+    if not is_non_web_image(photo_filename):
+        orig_path = os.path.join(UPLOADS_DIR, photo_filename)
+        return orig_path if os.path.exists(orig_path) else None
+        
+    preview_name = get_preview_filename(photo_filename)
+    preview_path = os.path.join(PREVIEWS_DIR, preview_name)
+    if os.path.exists(preview_path) and os.path.getsize(preview_path) > 0:
+        return preview_path
+        
+    orig_path = os.path.join(UPLOADS_DIR, photo_filename)
+    if not os.path.exists(orig_path):
+        return None
+        
+    if generate_image_preview(orig_path, preview_path):
+        return preview_path
+        
+    return orig_path
 
 def generate_video_thumbnail(original_path, thumb_path):
     """Generate thumbnail for video: ffmpeg frame extraction with elegant Pillow poster fallback."""
@@ -137,12 +191,13 @@ def generate_video_thumbnail(original_path, thumb_path):
         app.logger.error(f"Fallback video thumbnail generation failed: {err}")
 
 def generate_thumbnail_task(original_path, thumb_path, photo_id=None):
-    """Background task to generate optimized JPEG thumbnail without blocking HTTP request workers."""
+    """Background task to generate optimized JPEG thumbnail and high-res preview in a single efficient pass."""
     try:
         if is_video_file(original_path):
             generate_video_thumbnail(original_path, thumb_path)
             return
 
+        filename = os.path.basename(original_path)
         with Image.open(original_path) as img:
             try:
                 img = ImageOps.exif_transpose(img)
@@ -150,20 +205,30 @@ def generate_thumbnail_task(original_path, thumb_path, photo_id=None):
                 pass
             
             width, height = img.size
-            thumb_img = img.copy()
-            if thumb_img.mode in ('RGBA', 'P', 'LA'):
-                thumb_img = thumb_img.convert('RGB')
-                
-            thumb_img.thumbnail((500, 500), Image.Resampling.LANCZOS)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+
+            # 1. For HEIC/HEIF/DNG: generate high-res display preview in same pass
+            if is_non_web_image(filename):
+                preview_name = get_preview_filename(filename)
+                preview_path = os.path.join(PREVIEWS_DIR, preview_name)
+                preview_img = img.copy()
+                preview_img.thumbnail((2560, 2560), Image.Resampling.LANCZOS)
+                os.makedirs(os.path.dirname(preview_path), exist_ok=True)
+                preview_img.save(preview_path, 'JPEG', quality=90, optimize=True)
+                del preview_img
+
+            # 2. Generate 500x500 thumbnail
+            img.thumbnail((500, 500), Image.Resampling.LANCZOS)
             os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
-            thumb_img.save(thumb_path, 'JPEG', quality=82, optimize=True)
+            img.save(thumb_path, 'JPEG', quality=82, optimize=True)
 
         if photo_id:
             with get_db() as conn:
                 conn.execute('UPDATE photos SET width = ?, height = ? WHERE id = ?', (width, height, photo_id))
                 conn.commit()
     except Exception as err:
-        app.logger.error(f"Thumbnail generation error for {original_path}: {err}")
+        app.logger.error(f"Thumbnail/preview generation error for {original_path}: {err}")
 
 def ensure_session():
     if 'user_id' not in session:
@@ -220,9 +285,12 @@ def upload_file():
     with active_uploads_lock:
         active_uploads_count += 1
 
+    acquired = UPLOAD_SEMAPHORE.acquire(timeout=45.0)
+    if not acquired:
+        return jsonify({'error': 'Server ist stark ausgelastet. Bitte versuche es gleich noch einmal.'}), 503
+
     try:
-        with UPLOAD_SEMAPHORE:
-            for file in files:
+        for file in files:
                 if file and allowed_file(file.filename):
                     try:
                         original_filename = file.filename
@@ -264,6 +332,7 @@ def upload_file():
                 else:
                     errors.append(f"{file.filename}: Ungültiges Dateiformat.")
     finally:
+        UPLOAD_SEMAPHORE.release()
         with active_uploads_lock:
             active_uploads_count = max(0, active_uploads_count - 1)
 
@@ -318,7 +387,11 @@ def upload_chunk():
             })
 
         # All chunks received! Finalize assembly and process file with concurrency limiter
-        with UPLOAD_SEMAPHORE:
+        acquired = UPLOAD_SEMAPHORE.acquire(timeout=45.0)
+        if not acquired:
+            return jsonify({'error': 'Server ist stark ausgelastet. Bitte gleich nochmal versuchen.'}), 503
+
+        try:
             ext = original_filename.rsplit('.', 1)[1].lower()
             photo_id = str(uuid.uuid4())
             out_filename = f"{photo_id}.{ext}"
@@ -354,6 +427,8 @@ def upload_chunk():
                 }],
                 'errors': []
             })
+        finally:
+            UPLOAD_SEMAPHORE.release()
     except Exception as err:
         app.logger.error(f"Error in chunked upload for {original_filename}: {err}")
         if os.path.exists(part_path) and chunk_index == total_chunks - 1:
@@ -375,7 +450,11 @@ def my_uploads():
             'FROM photos WHERE session_id = ? ORDER BY uploaded_at DESC', (user_id,)
         ).fetchall()
         
-    photos = [dict(row) for row in rows]
+    photos = []
+    for row in rows:
+        item = dict(row)
+        item['preview_url'] = url_for('serve_preview', filename=item['filename'])
+        photos.append(item)
     return jsonify({'photos': photos})
 
 @app.route('/api/delete/<photo_id>', methods=['POST'])
@@ -393,22 +472,41 @@ def delete_photo(photo_id):
         # Delete local files if present
         out_path = os.path.join(UPLOADS_DIR, photo['filename'])
         thumb_path = os.path.join(THUMBNAILS_DIR, photo['thumbnail'])
+        preview_path = os.path.join(PREVIEWS_DIR, get_preview_filename(photo['filename']))
         
-        if os.path.exists(out_path):
-            try:
-                os.remove(out_path)
-            except Exception:
-                pass
-        if os.path.exists(thumb_path) and thumb_path != out_path:
-            try:
-                os.remove(thumb_path)
-            except Exception:
-                pass
+        for p in [out_path, thumb_path, preview_path]:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
 
         conn.execute('DELETE FROM photos WHERE id = ?', (photo_id,))
         conn.commit()
         
     return jsonify({'success': True, 'id': photo_id})
+
+@app.route('/preview/<filename>')
+def serve_preview(filename):
+    """
+    Serves a browser-compatible viewable version of the media.
+    For HEIC/HEIF/DNG, generates/serves high-resolution JPEG.
+    For standard web formats and videos, serves directly.
+    """
+    if is_video_file(filename):
+        return send_from_directory(UPLOADS_DIR, filename)
+
+    path = ensure_preview(filename)
+    if not path or not os.path.exists(path):
+        orig = os.path.join(UPLOADS_DIR, filename)
+        if os.path.exists(orig):
+            return send_from_directory(UPLOADS_DIR, filename)
+        return "Vorschau nicht gefunden", 404
+
+    dir_name = os.path.dirname(path)
+    base_name = os.path.basename(path)
+    mimetype = 'image/jpeg' if base_name.lower().endswith(('.jpg', '.jpeg')) else None
+    return send_from_directory(dir_name, base_name, mimetype=mimetype)
 
 @app.route('/uploads/<filename>')
 def serve_upload(filename):
@@ -417,14 +515,25 @@ def serve_upload(filename):
         return "Datei nicht gefunden", 404
 
     is_download = request.args.get('download', '0') == '1'
+    is_raw = request.args.get('raw', '0') == '1'
     download_name = None
     with get_db() as conn:
         photo = conn.execute('SELECT original_filename FROM photos WHERE filename = ?', (filename,)).fetchone()
         if photo:
             download_name = photo['original_filename']
 
+    # 1. Download original untouched file
     if is_download:
         return send_from_directory(UPLOADS_DIR, filename, as_attachment=True, download_name=download_name or filename)
+
+    # 2. If opened directly in browser without download flag, serve web-friendly preview for HEIC/HEIF
+    if is_non_web_image(filename) and not is_raw:
+        preview_path = ensure_preview(filename)
+        if preview_path and os.path.exists(preview_path):
+            dir_name = os.path.dirname(preview_path)
+            base_name = os.path.basename(preview_path)
+            return send_from_directory(dir_name, base_name, mimetype='image/jpeg')
+
     return send_from_directory(UPLOADS_DIR, filename)
 
 @app.route('/thumbnails/<filename>')
